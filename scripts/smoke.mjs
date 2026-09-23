@@ -50,14 +50,7 @@ function write(name, text) {
 try {
   run(["new", "smoke test run"], 0);
   run(["next", "--json"], 0);
-  run(
-    [
-      "fulfill",
-      "brief",
-      "brief.md",
-    ],
-    2,
-  ); // brief.md does not exist yet -> E204, nothing advances
+  run(["fulfill", "brief", "brief.md"], 2); // brief.md does not exist yet -> E204, nothing advances
   write(
     "brief.md",
     "# Brief\n\n## Question\n\nDoes the pipeline hold?\n\n## Context\n\nSmoke run.\n\n## Scope\n\nFixture only.\n",
