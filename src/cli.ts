@@ -8,7 +8,7 @@ import { cmdNew, locateRun, noRunFound, readStepArg } from "./commands/shared.js
 import { cmdStatus } from "./commands/status.js";
 import type { HandlerResult } from "./envelope.js";
 import { resolveRoot } from "./run.js";
-import { readState } from "./state.js";
+import { type RunState, readState } from "./state.js";
 import { errorMessage } from "./util.js";
 
 interface CliOpts {
@@ -58,7 +58,7 @@ export function buildProgram(): Command {
         return;
       }
       // CLI steps execute when takeable; fetch and finalize run here.
-      let state;
+      let state: RunState;
       try {
         state = readState(runDir);
       } catch (error) {
