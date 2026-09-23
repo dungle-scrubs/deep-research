@@ -1,0 +1,134 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fail, type HandlerResult, ok } from "../envelope.js";
+import { renderFollowupWithQuestions } from "../prompts.js";
+import { type RunState, readState, writeState } from "../state.js";
+import { nextStep, STEPS, type StepName } from "../steps.js";
+import { extractGapsQuestions, type ProseStep, readTextFile, validateProse } from "../validate.js";
+
+const PROSE_STEPS: ReadonlySet<string> = new Set(["brief", "foundation", "gaps", "followup"]);
+
+export function isProseStep(step: StepName): step is ProseStep {
+  return PROSE_STEPS.has(step);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export interface FulfillOptions {
+  readonly runDir: string;
+  readonly step: StepName;
+  readonly file: string;
+}
+
+/** Validate the file and, on success, copy it into steps/ and advance the
+ *  state pointer. Never half-advances: validation runs before any write,
+ *  and state is written after the output file lands. */
+export function cmdFulfill(options: FulfillOptions): HandlerResult {
+  const { runDir, step } = options;
+  let state: RunState;
+  try {
+    state = readState(runDir);
+  } catch (error) {
+    return fail(4, runDir, step, [`E401: cannot read run state: ${errorMessage(error)}`]);
+  }
+  if (state.step === "done") {
+    return fail(
+      2,
+      runDir,
+      "done",
+      [`E201: run is done; a closed run can be read but not advanced`],
+      "Run is done. A closed run can be read (status, help) but not advanced.",
+    );
+  }
+  if (step !== state.step) {
+    return fail(
+      2,
+      runDir,
+      state.step,
+      [`E202: step ${step} is not takeable; the takeable step is ${state.step}`],
+      `Step ${step} is not takeable now. The takeable step is ${state.step}.`,
+    );
+  }
+  if (!isProseStep(step)) {
+    const meta = STEPS[step];
+    return fail(
+      2,
+      runDir,
+      step,
+      [
+        `E203: step ${step} is not fulfilled in ticket #11 (owned by ticket #${meta.ticket}); ` +
+          `fulfill the takeable prose step ${state.step} instead`,
+      ],
+      `Step ${step} is not part of this ticket's scope (ticket #${meta.ticket}).`,
+    );
+  }
+
+  let text: string;
+  try {
+    text = readTextFile(options.file);
+  } catch (error) {
+    return fail(2, runDir, step, [`E204: cannot read fulfill file: ${errorMessage(error)}`]);
+  }
+
+  const violations = validateProse(step, text).map((v) => `E205: ${v}`);
+  if (violations.length > 0) {
+    return fail(
+      2,
+      runDir,
+      step,
+      violations,
+      `Validation failed for ${step}:\n${violations.map((v) => `- ${v}`).join("\n")}\nRun does not advance.`,
+    );
+  }
+
+  const meta = STEPS[step];
+  const dest = path.join(runDir, meta.output);
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, text, "utf8");
+  } catch (error) {
+    return fail(4, runDir, step, [`E401: cannot write step output: ${errorMessage(error)}`]);
+  }
+
+  // Gaps fulfill feeds the follow-up template deterministically.
+  if (step === "gaps") {
+    const { questions } = extractGapsQuestions(text);
+    try {
+      const copyPath = path.join(runDir, "prompts", "followup.md");
+      const copy = fs.readFileSync(copyPath, "utf8");
+      const rendered = renderFollowupWithQuestions(copy, state.topic, questions);
+      fs.writeFileSync(copyPath, rendered, "utf8");
+    } catch (error) {
+      return fail(4, runDir, step, [
+        `E401: gaps output saved but follow-up prompt update failed: ${errorMessage(error)}`,
+      ]);
+    }
+  }
+
+  const advanced = nextStep(step);
+  try {
+    writeState(runDir, {
+      completed: [...state.completed, step],
+      created: state.created,
+      step: advanced,
+      topic: state.topic,
+      version: 1,
+    });
+  } catch (error) {
+    return fail(4, runDir, step, [
+      `E402: output saved to ${meta.output} but state advance failed: ${errorMessage(error)}; ` +
+        `state file: ${path.join(runDir, "state", "state.json")}`,
+    ]);
+  }
+
+  const human =
+    advanced === "done"
+      ? `Fulfilled ${step} -> run done.`
+      : `Fulfilled ${step} -> next takeable step: ${advanced} (output: ${STEPS[advanced as StepName]?.output ?? "done"})`;
+  return ok(runDir, advanced === "done" ? "done" : advanced, human, {
+    fulfilled: step,
+    output: meta.output,
+  });
+}

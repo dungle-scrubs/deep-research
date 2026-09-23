@@ -1,0 +1,30 @@
+{
+  "name": "deep-research",
+  "version": "0.1.0",
+  "private": true,
+  "description": "dr - deterministic deep-research pipeline CLI (caller-supplied intelligence, CLI-held validation)",
+  "type": "module",
+  "bin": {
+    "dr": "./dist/dr.mjs"
+  },
+  "scripts": {
+    "build": "tsdown && node scripts/embed.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src tests scripts",
+    "test": "vitest run",
+    "pretest": "pnpm build"
+  },
+  "packageManager": "pnpm@11.9.0",
+  "dependencies": {
+    "commander": "15.0.0",
+    "marked": "18.0.14",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "@types/node": "^26.6.2",
+    "tsdown": "0.23.0",
+    "typescript": "7.0.2",
+    "vitest": "5.0.1"
+  }
+}
