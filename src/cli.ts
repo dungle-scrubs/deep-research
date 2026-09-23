@@ -7,7 +7,7 @@ import { cmdNew, locateRun, noRunFound, readStepArg } from "./commands/shared.js
 import { cmdStatus } from "./commands/status.js";
 import type { HandlerResult } from "./envelope.js";
 import { resolveRoot } from "./run.js";
-import { readState, type RunState } from "./state.js";
+import { type RunState, readState } from "./state.js";
 
 function emit(result: HandlerResult, asJson: boolean): void {
   if (asJson) {

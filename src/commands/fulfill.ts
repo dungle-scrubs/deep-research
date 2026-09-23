@@ -1,11 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { parseClaims } from "../claims.js";
+import { type ClaimsFile, parseClaims } from "../claims.js";
 import { fail, type HandlerResult, ok } from "../envelope.js";
 import { renderFollowupWithQuestions } from "../prompts.js";
 import { type RunState, readState, writeState } from "../state.js";
 import { nextStep, STEPS, type StepName } from "../steps.js";
 import { extractGapsQuestions, type ProseStep, readTextFile, validateProse } from "../validate.js";
+import { deriveMatrix, validateVerdicts } from "../verdicts.js";
 
 const PROSE_STEPS: ReadonlySet<string> = new Set(["brief", "foundation", "gaps", "followup"]);
 
@@ -52,7 +53,7 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
       `Step ${step} is not takeable now. The takeable step is ${state.step}.`,
     );
   }
-  if (step !== "claims" && !isProseStep(step)) {
+  if (step !== "claims" && step !== "verdicts" && !isProseStep(step)) {
     const scopeMeta = STEPS[step];
     return fail(
       2,
@@ -74,8 +75,10 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
   }
 
   let violations: readonly string[];
+  let parsedClaims: ClaimsFile | null = null;
   if (step === "claims") {
     const { claims, issues } = parseClaims(text);
+    parsedClaims = claims;
     violations = issues.map((issue) => `E205: claims: ${issue.path}: ${issue.message}`);
     if (claims) {
       const seen = new Set<string>();
@@ -84,6 +87,20 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
           violations = [...violations, `E205: claims: ${claim.id}: duplicate claim id`];
         seen.add(claim.id);
       }
+    }
+  } else if (step === "verdicts") {
+    const claimsRaw = fs.readFileSync(path.join(runDir, "steps", "claims.json"), "utf8");
+    const { claims, issues } = parseClaims(claimsRaw);
+    if (!claims) {
+      violations = [
+        `E205: verdicts: steps/claims.json no longer validates: ${issues
+          .map((issue) => issue.message)
+          .join("; ")}`,
+      ];
+    } else {
+      parsedClaims = claims;
+      const { issues: verdictIssues } = validateVerdicts(text, claims);
+      violations = verdictIssues.map((issue) => `E205: verdicts: ${issue.path}: ${issue.message}`);
     }
   } else {
     violations = validateProse(step, text).map((v) => `E205: ${v}`);
@@ -122,6 +139,33 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
     }
   }
 
+  // Verdicts fulfill runs the deterministic derivation into state/matrix.json.
+  let matrixSummary: string | null = null;
+  if (step === "verdicts" && parsedClaims) {
+    try {
+      const before = fs.readFileSync(path.join(runDir, "steps", "claims.json"), "utf8");
+      const { entries } = validateVerdicts(text, parsedClaims);
+      const matrix = deriveMatrix(parsedClaims, entries, runDir, new Date().toISOString());
+      const matrixPath = path.join(runDir, "state", "matrix.json");
+      fs.mkdirSync(path.dirname(matrixPath), { recursive: true });
+      fs.writeFileSync(matrixPath, `${JSON.stringify(matrix, null, 2)}\n`, "utf8");
+      const after = fs.readFileSync(path.join(runDir, "steps", "claims.json"), "utf8");
+      if (after !== before) {
+        return fail(4, runDir, step, [
+          "E401: derivation would rewrite steps/claims.json; matrix discarded",
+        ]);
+      }
+      const counts = new Map<string, number>();
+      for (const claim of matrix.claims)
+        counts.set(claim.status, (counts.get(claim.status) ?? 0) + 1);
+      matrixSummary = [...counts.entries()].map(([s, n]) => `${s}: ${n}`).join(", ");
+    } catch (error) {
+      return fail(4, runDir, step, [
+        `E401: verdicts saved but derivation failed: ${errorMessage(error)}`,
+      ]);
+    }
+  }
+
   const advanced = nextStep(step);
   try {
     writeState(runDir, {
@@ -141,8 +185,11 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
   const human =
     advanced === "done"
       ? `Fulfilled ${step} -> run done.`
-      : `Fulfilled ${step} -> next takeable step: ${advanced} (output: ${STEPS[advanced as StepName]?.output ?? "done"})`;
+      : matrixSummary !== null
+        ? `Fulfilled ${step} -> derivation: ${matrixSummary}\nNext takeable step: ${advanced} (output: ${STEPS[advanced as StepName]?.output ?? "done"})`
+        : `Fulfilled ${step} -> next takeable step: ${advanced} (output: ${STEPS[advanced as StepName]?.output ?? "done"})`;
   return ok(runDir, advanced === "done" ? "done" : advanced, human, {
+    derivation: matrixSummary ?? undefined,
     fulfilled: step,
     output: meta.output,
   });

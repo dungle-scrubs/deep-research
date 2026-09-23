@@ -1,6 +1,18 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { fail, type HandlerResult, ok } from "../envelope.js";
 import { type RunState, readState } from "../state.js";
 import { STEP_ORDER, STEPS, type StepName } from "../steps.js";
+import type { Matrix } from "../verdicts.js";
+
+function readMatrix(runDir: string): Matrix | null {
+  try {
+    const raw = fs.readFileSync(path.join(runDir, "state", "matrix.json"), "utf8");
+    return JSON.parse(raw) as Matrix;
+  } catch {
+    return null;
+  }
+}
 
 export function cmdStatus(runDir: string): HandlerResult {
   let state: RunState;
@@ -16,20 +28,26 @@ export function cmdStatus(runDir: string): HandlerResult {
     name,
     takeable: state.step === name,
   }));
+  const matrix = readMatrix(runDir);
+  const unreachable = matrix
+    ? matrix.claims.filter((claim) => claim.status === "unreachable").length
+    : 0;
   const human =
     `Run: ${runDir}\n` +
     `Topic: ${state.topic}\n` +
     `Current step: ${state.step}\n` +
     `Completed: ${state.completed.length > 0 ? state.completed.join(" -> ") : "(none)"}\n` +
-    `Coverage: ticket #11 tracks prose steps only; claim/matrix counts arrive in ticket #13.\n` +
-    `Unreachable: not tracked yet (fetch step arrives in ticket #12).`;
+    (matrix
+      ? `Coverage: ${JSON.stringify(matrix.coverage)}\nCaveats: ${matrix.caveats.length}\nUnreachable claims: ${unreachable}`
+      : "Coverage: no matrix yet (derives at verdicts fulfill).");
   return ok(runDir, state.step, human, {
+    caveats: matrix?.caveats ?? [],
     completed: [...state.completed],
-    coverage: { note: "claim/matrix counts arrive in ticket #13" },
+    coverage: matrix?.coverage ?? { note: "derives at verdicts fulfill" },
     created: state.created,
     current: state.step,
     steps,
     topic: state.topic,
-    unreachable: 0,
+    unreachable,
   });
 }

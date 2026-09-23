@@ -33,10 +33,11 @@ export function cmdNext(runDir: string): HandlerResult {
   // steps are named with their owning ticket instead of a prompt.
   const IMPLEMENTED: ReadonlySet<string> = new Set([
     "brief",
-    "foundation",
-    "gaps",
-    "followup",
     "claims",
+    "foundation",
+    "followup",
+    "gaps",
+    "verdicts",
   ]);
   if (!IMPLEMENTED.has(state.step) && state.step !== "fetch") {
     return fail(

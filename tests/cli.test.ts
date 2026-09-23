@@ -211,13 +211,28 @@ describe("prose pipeline", () => {
       },
     ]);
     expect(run(["fulfill", "claims", write("claims.json", claimsJson)]).code).toBe(0);
+    const runDir = path.join(workdir, fs.readdirSync(workdir)[0] ?? "");
+    const claimsBefore = fs.readFileSync(path.join(runDir, "steps", "claims.json"), "utf8");
     const fetched = runJson(["next"]);
     expect(fetched.code).toBe(0);
     expect(fetched.env.step).toBe("verdicts");
-    // verdicts onward is future work (ticket #13).
+    // Verdicts fulfill (ticket #13) derives statuses and advances.
+    const verdictsJson = JSON.stringify([
+      { claimId: "c001", url: "http://127.0.0.1/x", verdict: "not-found", note: "" },
+    ]);
+    const verdict = runJson(["fulfill", "verdicts", write("verdicts.json", verdictsJson)]);
+    expect(verdict.code).toBe(0);
+    expect(verdict.env.step).toBe("briefing");
+    // claims.json is byte-identical after derivation.
+    const claimsAfter = fs.readFileSync(path.join(runDir, "steps", "claims.json"), "utf8");
+    expect(claimsAfter).toBe(claimsBefore);
+    // matrix.json exists with derived statuses.
+    const matrix = JSON.parse(fs.readFileSync(path.join(runDir, "state", "matrix.json"), "utf8"));
+    expect(matrix.claims[0].status).toBe("unreachable");
+    // briefing onward is future work (ticket #14).
     const future = runJson(["next"]);
     expect(future.code).toBe(2);
-    expect(future.env.errors.join("\n")).toContain("ticket #13");
+    expect(future.env.errors.join("\n")).toContain("ticket #14");
   });
 });
 
