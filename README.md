@@ -19,6 +19,18 @@ pnpm build
 node dist/dr.mjs --help
 ```
 
+## Skill for agent sessions
+
+One line, no Homebrew:
+
+```sh
+ln -s "$(pwd)/skills/deep-research" ~/.agents/skills/deep-research
+```
+
+The skill teaches an agent session to drive the CLI: the loop, the
+per-step choose-model queries, and the untrusted-content warning for
+fetched pages.
+
 ## Use
 
 ```sh
@@ -34,8 +46,17 @@ Runs live in `YYYY-MM-DD-slug/` under the cwd, `--root <dir>`, or
 `{ok, run, step, errors[]}`). Exits: 0 ok, 1 usage, 2 gate/validation,
 3 nothing takeable, 4 internal.
 
+## Smoke
+
+```sh
+pnpm smoke
+```
+
+Builds, then drives a fixture run end to end (loopback citation, SSRF
+refusal, unreachable derivation, report gate) to done. Exits green.
+
 ## Status
 
-Ticket #11 (scaffold + prose pipeline: brief, foundation, gaps, followup)
-is the implemented slice. Tickets #12-#15 own claims/fetch, verdicts,
-briefing/synthesis/finalize, and skill/README/smoke.
+Tickets #11-#14 are implemented and closed: prose pipeline, claims schema
+and fetcher, verdicts and derivation, briefing/synthesis/finalize. This
+ticket (#15) adds the skill, README, and smoke recipe.

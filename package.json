@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check src tests scripts",
     "test": "vitest run",
-    "pretest": "pnpm build"
+    "pretest": "pnpm build",
+    "smoke": "pnpm build && node scripts/smoke.mjs"
   },
   "packageManager": "pnpm@11.9.0",
   "dependencies": {
