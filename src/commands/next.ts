@@ -1,23 +1,21 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fail, type HandlerResult, ok } from "../envelope.js";
-import { type RunState, readState } from "../state.js";
+import { runLayout } from "../rundir.js";
 import { STEPS } from "../steps.js";
+import { errorMessage } from "../util.js";
+import { loadStateOrFail } from "./shared.js";
 
 export function promptForStep(runDir: string, step: keyof typeof STEPS): string {
   const meta = STEPS[step];
   if (!meta.template) return "";
-  return fs.readFileSync(path.join(runDir, "prompts", meta.template), "utf8");
+  return fs.readFileSync(path.join(runLayout(runDir).promptsDir, meta.template), "utf8");
 }
 
 export function cmdNext(runDir: string): HandlerResult {
-  let state: RunState;
-  try {
-    state = readState(runDir);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return fail(4, runDir, null, [`E401: cannot read run state: ${message}`]);
-  }
+  const loaded = loadStateOrFail(runDir, null);
+  if ("result" in loaded) return loaded.result;
+  const state = loaded.state;
   if (state.step === "done") {
     return fail(
       3,
@@ -27,38 +25,13 @@ export function cmdNext(runDir: string): HandlerResult {
       "Nothing takeable: run is done.",
     );
   }
+  // CLI steps never reach this function: dr next executes them directly.
   const meta = STEPS[state.step];
-  // Caller steps implemented so far (tickets #11-#14). The CLI steps
-  // (fetch, finalize) never reach this branch: dr next executes them
-  // directly in src/cli.ts.
-  const IMPLEMENTED: ReadonlySet<string> = new Set([
-    "brief",
-    "briefing",
-    "claims",
-    "foundation",
-    "followup",
-    "gaps",
-    "synthesis",
-    "verdicts",
-  ]);
-  if (!IMPLEMENTED.has(state.step) && state.step !== "fetch" && state.step !== "finalize") {
-    return fail(
-      2,
-      runDir,
-      state.step,
-      [
-        `E206: step ${state.step} is owned by ticket #${meta.ticket}; ` +
-          `it is not executable yet`,
-      ],
-      `Step ${state.step} is owned by ticket #${meta.ticket}; not executable yet.`,
-    );
-  }
   let prompt = "";
   try {
     prompt = promptForStep(runDir, state.step);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return fail(4, runDir, state.step, [`E401: cannot read prompt copy: ${message}`]);
+    return fail(4, runDir, state.step, [`E401: cannot read prompt copy: ${errorMessage(error)}`]);
   }
   const human =
     `Takeable step: ${state.step}\n` +

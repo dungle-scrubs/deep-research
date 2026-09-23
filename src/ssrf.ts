@@ -1,5 +1,5 @@
 import * as dns from "node:dns/promises";
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 
 /** SSRF guard: reject non-http(s) schemes, non-standard ports, loopback,
  *  link-local, private, and unspecified ranges, plus .local hosts, before
@@ -8,13 +8,6 @@ import { isIP } from "node:net";
 export interface GuardVerdict {
   readonly allowed: boolean;
   readonly reason?: string;
-}
-
-function ipv4ToNumber(ip: string): number {
-  const parts = ip.split(".").map(Number);
-  return (
-    ((parts[0] ?? 0) << 24) | ((parts[1] ?? 0) << 16) | ((parts[2] ?? 0) << 8) | (parts[3] ?? 0)
-  );
 }
 
 /** Expand an IPv6 address (including :: and v4-mapped forms) to a BigInt. */
@@ -30,10 +23,14 @@ function ipv6ToBig(ip: string): bigint | null {
   }
   const headGroups = head === "" ? [] : head.split(":");
   const tailGroups = tail === "" ? [] : tail.split(":");
-  // A v4-mapped tail (e.g. ::ffff:192.0.2.1) counts as two groups.
   const expand = (group: string): string[] => {
     if (group.includes(".")) {
-      const n = ipv4ToNumber(group);
+      const parts = group.split(".").map(Number);
+      const n =
+        ((parts[0] ?? 0) << 24) |
+        ((parts[1] ?? 0) << 16) |
+        ((parts[2] ?? 0) << 8) |
+        (parts[3] ?? 0);
       return [((n >>> 16) & 0xffff).toString(16), (n & 0xffff).toString(16)];
     }
     return [group];
@@ -65,22 +62,29 @@ const V6_LINK_LOCAL_END = groupsToBig(0xfebf, FFFF, FFFF, FFFF, FFFF, FFFF, FFFF
 const V6_ULA_START = groupsToBig(0xfc00, 0, 0, 0, 0, 0, 0, 0);
 const V6_ULA_END = groupsToBig(0xfdff, FFFF, FFFF, FFFF, FFFF, FFFF, FFFF, FFFF);
 
+const v4Blocks = new BlockList();
+for (const cidr of [
+  "127.0.0.0/8",
+  "10.0.0.0/8",
+  "172.16.0.0/12",
+  "192.168.0.0/16",
+  "169.254.0.0/16",
+  "100.64.0.0/10",
+]) {
+  v4Blocks.addSubnet(cidr.split("/")[0] as string, Number(cidr.split("/")[1]));
+}
 function ipVerdict(ip: string): GuardVerdict {
   const family = isIP(ip);
   if (family === 4) {
-    const value = ipv4ToNumber(ip) >>> 0;
-    const inRange = (start: number, end: number) => value >= start && value <= end;
-    if (inRange(0x7f000000, 0x7fffffff)) return { allowed: false, reason: `loopback range ${ip}` };
-    if (inRange(0x0a000000, 0x0affffff)) return { allowed: false, reason: `private range ${ip}` };
-    if (inRange(0xac100000, 0xac1fffff)) return { allowed: false, reason: `private range ${ip}` };
-    if (inRange(0xc0a80000, 0xc0a8ffff)) return { allowed: false, reason: `private range ${ip}` };
-    if (inRange(0xa9fe0000, 0xa9feffff))
-      return { allowed: false, reason: `link-local range ${ip}` };
-    if (inRange(0x64400000, 0x647fffff)) return { allowed: false, reason: `CGNAT range ${ip}` };
-    if (value === 0) return { allowed: false, reason: `unspecified address ${ip}` };
+    if (ip === "0.0.0.0") return { allowed: false, reason: `unspecified address ${ip}` };
+    if (v4Blocks.check(ip)) {
+      return { allowed: false, reason: `refused range containing ${ip}` };
+    }
     return { allowed: true };
   }
   if (family === 6) {
+    // net.BlockList has no working IPv6 support on this Node line, so the
+    // v6 ranges stay numeric.
     const value = ipv6ToBig(ip);
     if (value === null) return { allowed: false, reason: `unparseable address ${ip}` };
     if (value === V6_LOOPBACK) return { allowed: false, reason: `loopback range ${ip}` };

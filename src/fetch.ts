@@ -1,6 +1,8 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { promisify } from "node:util";
+import { runLayout } from "./rundir.js";
 import { type GuardVerdict, guardUrl } from "./ssrf.js";
 import { normalizeUrl, urlHash } from "./url.js";
 
@@ -27,13 +29,9 @@ export interface LedgerEntry {
   readonly attempts: number;
 }
 
-export function ledgerPath(runDir: string): string {
-  return path.join(runDir, "state", "fetch-ledger.json");
-}
-
 export function readLedger(runDir: string): LedgerEntry[] {
   try {
-    const raw = fs.readFileSync(ledgerPath(runDir), "utf8");
+    const raw = fs.readFileSync(runLayout(runDir).ledgerFile, "utf8");
     const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed) ? (parsed as LedgerEntry[]) : [];
   } catch {
@@ -42,9 +40,9 @@ export function readLedger(runDir: string): LedgerEntry[] {
 }
 
 export function writeLedger(runDir: string, entries: readonly LedgerEntry[]): void {
-  const dir = path.join(runDir, "state");
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(ledgerPath(runDir), `${JSON.stringify(entries, null, 2)}\n`, "utf8");
+  const layout = runLayout(runDir);
+  fs.mkdirSync(layout.stateDir, { recursive: true });
+  fs.writeFileSync(layout.ledgerFile, `${JSON.stringify(entries, null, 2)}\n`, "utf8");
 }
 
 /** Extract plain text from HTML: drop script/style, strip tags, decode the
@@ -66,16 +64,20 @@ export function extractText(html: string): string {
     .trim();
 }
 
-function pdfText(rawPath: string): string | null {
-  const probe = spawnSync("pdftotext", ["-layout", rawPath, "-"], {
-    encoding: "utf8",
-    timeout: 30_000,
-  });
-  if (probe.error || probe.status !== 0) return null;
-  return probe.stdout.trim().length > 0 ? probe.stdout : null;
+const execFileP = promisify(execFile);
+
+async function pdfText(rawPath: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileP("pdftotext", ["-layout", rawPath, "-"], {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    return stdout.trim().length > 0 ? stdout : null;
+  } catch {
+    return null;
+  }
 }
 
-/** In-memory robots.txt cache for one run. */
 type RobotsCache = Map<string, string[]>;
 
 async function robotsDisallows(
@@ -92,7 +94,7 @@ async function robotsDisallows(
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (response.ok) {
-      const body = await response.text();
+      const body = (await response.text()).slice(0, 64 * 1024);
       disallow = parseRobots(body);
     }
   } catch {
@@ -173,13 +175,17 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
     return prior === undefined || prior.status !== "ok";
   });
 
+  const fetchedDir = runLayout(options.runDir).fetchedDir;
+  fs.mkdirSync(fetchedDir, { recursive: true });
   const robotsCache: RobotsCache = new Map();
+  const guardCache = new Map<string, GuardVerdict>();
   const clock: PerDomainClock = { lastHit: new Map() };
   const results: LedgerEntry[] = [];
 
   for (const normalized of targets) {
     const prior = byNormalized.get(normalized);
     const attempts = (prior?.attempts ?? 0) + 1;
+    const target = new URL(normalized);
     const base = {
       hash: urlHash(normalized),
       normalized,
@@ -188,7 +194,11 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
       fetchedAt: now().toISOString(),
     };
 
-    const verdict = await guard(normalized);
+    let verdict = guardCache.get(target.origin);
+    if (verdict === undefined) {
+      verdict = await guard(normalized);
+      guardCache.set(target.origin, verdict);
+    }
     if (!verdict.allowed) {
       results.push({
         ...base,
@@ -201,14 +211,14 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
       continue;
     }
 
-    const origin = new URL(normalized).origin;
+    const origin = target.origin;
     let disallowList: string[] = [];
     try {
       disallowList = await robotsDisallows(origin, robotsCache, fetchFn);
     } catch {
       disallowList = [];
     }
-    const pathname = new URL(normalized).pathname;
+    const pathname = target.pathname;
     if (disallowList.some((rule) => pathname.startsWith(rule))) {
       results.push({
         ...base,
@@ -231,7 +241,7 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
       const contentType = response.headers.get("content-type");
       if (response.status === 401 || response.status === 402) {
         const body = Buffer.from(await response.arrayBuffer());
-        writeDoc(options.runDir, base.hash, body, null);
+        writeDoc(fetchedDir, base.hash, body, null);
         results.push({
           ...base,
           bytes: body.byteLength,
@@ -255,16 +265,10 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
       }
       const buffer = await readCapped(response, options.maxBytes ?? MAX_BYTES);
       const isPdf = (contentType ?? "").toLowerCase().includes("application/pdf");
-      writeDoc(
-        options.runDir,
-        base.hash,
-        buffer,
-        isPdf ? null : extractText(buffer.toString("utf8")),
-        isPdf,
-      );
+      writeDoc(fetchedDir, base.hash, buffer, isPdf ? null : extractText(buffer.toString("utf8")));
       if (isPdf) {
-        const rawPath = path.join(options.runDir, "fetched", `${base.hash}.raw`);
-        const text = pdfText(rawPath);
+        const rawPath = path.join(fetchedDir, `${base.hash}.raw`);
+        const text = await pdfText(rawPath);
         if (text === null) {
           results.push({
             ...base,
@@ -276,7 +280,7 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
           });
           continue;
         }
-        fs.writeFileSync(path.join(options.runDir, "fetched", `${base.hash}.txt`), text, "utf8");
+        fs.writeFileSync(path.join(fetchedDir, `${base.hash}.txt`), text, "utf8");
       }
       results.push({
         ...base,
@@ -301,6 +305,7 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
 
   // Merge: new results replace prior entries for the same normalized URL;
   // untouched prior entries (retry mode keeps ok pages) survive.
+  if (results.length === 0) return [...byNormalized.values()];
   const merged = new Map(byNormalized);
   for (const entry of results) merged.set(entry.normalized, entry);
   const all = [...merged.values()];
@@ -317,29 +322,21 @@ async function readCapped(response: Response, cap: number): Promise<Buffer> {
     const { done, value } = await reader.read();
     if (done) break;
     if (value) {
-      chunks.push(Buffer.from(value));
-      total += value.byteLength;
+      const room = cap - total;
+      chunks.push(Buffer.from(value).subarray(0, room));
+      total += Math.min(value.byteLength, room);
       if (total >= cap) {
         await reader.cancel();
         break;
       }
     }
   }
-  return Buffer.concat(chunks).subarray(0, cap);
+  return Buffer.concat(chunks);
 }
 
-function writeDoc(
-  runDir: string,
-  hash: string,
-  raw: Buffer,
-  text: string | null,
-  isPdf = false,
-): void {
-  void isPdf;
-  const dir = path.join(runDir, "fetched");
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, `${hash}.raw`), raw);
+function writeDoc(fetchedDir: string, hash: string, raw: Buffer, text: string | null): void {
+  fs.writeFileSync(path.join(fetchedDir, `${hash}.raw`), raw);
   if (text !== null && text.length > 0) {
-    fs.writeFileSync(path.join(dir, `${hash}.txt`), text, "utf8");
+    fs.writeFileSync(path.join(fetchedDir, `${hash}.txt`), text, "utf8");
   }
 }

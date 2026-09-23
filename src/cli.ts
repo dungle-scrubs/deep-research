@@ -9,6 +9,12 @@ import { cmdStatus } from "./commands/status.js";
 import type { HandlerResult } from "./envelope.js";
 import { resolveRoot } from "./run.js";
 import { readState } from "./state.js";
+import { errorMessage } from "./util.js";
+
+interface CliOpts {
+  root?: string;
+  json?: boolean;
+}
 
 function emit(result: HandlerResult, asJson: boolean): void {
   if (asJson) {
@@ -35,9 +41,8 @@ export function buildProgram(): Command {
     .argument("<topic>", "research topic")
     .option("--root <dir>", "run root directory (overrides DR_ROOT and cwd)")
     .option("--json", "emit the stable envelope {ok, run, step, errors[]}")
-    .action((topic: string, opts: { root?: string; json?: boolean }) => {
-      const root = resolveRoot({ rootFlag: opts.root });
-      emit(cmdNew(root, { rootFlag: opts.root, topic }), opts.json === true);
+    .action((topic: string, opts: CliOpts) => {
+      emit(cmdNew({ rootFlag: opts.root, topic }), opts.json === true);
     });
 
   program
@@ -45,7 +50,7 @@ export function buildProgram(): Command {
     .description("Name the single takeable step with its prompt and output location")
     .option("--root <dir>", "run root directory (overrides DR_ROOT and cwd)")
     .option("--json", "emit the stable envelope {ok, run, step, errors[]}")
-    .action(async (opts: { root?: string; json?: boolean }) => {
+    .action(async (opts: CliOpts) => {
       const root = resolveRoot({ rootFlag: opts.root });
       const runDir = locateRun(root);
       if (!runDir) {
@@ -53,31 +58,30 @@ export function buildProgram(): Command {
         return;
       }
       // CLI steps execute when takeable; fetch and finalize run here.
-      let step: string;
+      let state;
       try {
-        step = readState(runDir).step;
+        state = readState(runDir);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
         emit(
           {
             code: 4,
             envelope: {
-              errors: [`E401: cannot read run state: ${message}`],
+              errors: [`E401: cannot read run state: ${errorMessage(error)}`],
               ok: false,
               run: runDir,
               step: null,
             },
-            human: `Cannot read run state: ${message}`,
+            human: `Cannot read run state: ${errorMessage(error)}`,
           },
           opts.json === true,
         );
         return;
       }
-      if (step === "fetch") {
+      if (state.step === "fetch") {
         emit(await cmdFetch(runDir), opts.json === true);
         return;
       }
-      if (step === "finalize") {
+      if (state.step === "finalize") {
         emit(cmdFinalize(runDir), opts.json === true);
         return;
       }
@@ -91,7 +95,7 @@ export function buildProgram(): Command {
     .argument("<file>", "file holding the step output")
     .option("--root <dir>", "run root directory (overrides DR_ROOT and cwd)")
     .option("--json", "emit the stable envelope {ok, run, step, errors[]}")
-    .action((stepRaw: string, file: string, opts: { root?: string; json?: boolean }) => {
+    .action((stepRaw: string, file: string, opts: CliOpts) => {
       const asJson = opts.json === true;
       const step = readStepArg(stepRaw);
       const root = resolveRoot({ rootFlag: opts.root });
@@ -124,7 +128,7 @@ export function buildProgram(): Command {
     .description("Re-attempt unreachable URLs idempotently; keeps fetched pages")
     .option("--root <dir>", "run root directory (overrides DR_ROOT and cwd)")
     .option("--json", "emit the stable envelope {ok, run, step, errors[]}")
-    .action(async (opts: { root?: string; json?: boolean }) => {
+    .action(async (opts: CliOpts) => {
       const root = resolveRoot({ rootFlag: opts.root });
       const runDir = locateRun(root);
       if (!runDir) {
@@ -139,7 +143,7 @@ export function buildProgram(): Command {
     .description("Run summary: current step, steps completed, coverage counts")
     .option("--root <dir>", "run root directory (overrides DR_ROOT and cwd)")
     .option("--json", "emit the stable envelope {ok, run, step, errors[]}")
-    .action((opts: { root?: string; json?: boolean }) => {
+    .action((opts: CliOpts) => {
       const root = resolveRoot({ rootFlag: opts.root });
       const runDir = locateRun(root);
       if (!runDir) {
@@ -155,7 +159,7 @@ export function buildProgram(): Command {
     .argument("[step]", "pipeline step")
     .option("--root <dir>", "run root directory (overrides DR_ROOT and cwd)")
     .option("--json", "emit the stable envelope {ok, run, step, errors[]}")
-    .action((stepRaw: string | undefined, opts: { root?: string; json?: boolean }) => {
+    .action((stepRaw: string | undefined, opts: CliOpts) => {
       const root = resolveRoot({ rootFlag: opts.root });
       emit(cmdHelp(locateRun(root), stepRaw), opts.json === true);
     });

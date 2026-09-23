@@ -57,8 +57,6 @@ export function extractGapsQuestions(text: string): GapsQuestionList {
     const message = error instanceof Error ? error.message : String(error);
     return { errors: [`question list is not valid JSON: ${message}`], questions: [] };
   }
-  // Zod is the validation library: the question list parses here, and the
-  // claims/verdict schemas in tickets #12-#13 build on the same library.
   const listSchema = z.array(z.string().trim().min(1)).min(1);
   const result = listSchema.safeParse(parsed);
   if (!result.success) {

@@ -2,20 +2,18 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fail, type HandlerResult, ok } from "../envelope.js";
 import { writePrompts } from "../prompts.js";
-import { resolveRoot, uniqueRunDir } from "../run.js";
-import { initialState, statePath, writeState } from "../state.js";
-import { isStepName, STEPS, type StepName } from "../steps.js";
+import { resolveRoot } from "../run.js";
+import { createRunDirectory, runLayout } from "../rundir.js";
+import { initialState, type RunState, readState, writeState } from "../state.js";
+import { isStepName, nextStep, type StepName } from "../steps.js";
+import { errorMessage } from "../util.js";
 
 export interface NewOptions {
   readonly topic: string;
   readonly rootFlag?: string | undefined;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-export function cmdNew(_runRoot: string, options: NewOptions): HandlerResult {
+export function cmdNew(options: NewOptions): HandlerResult {
   const topic = options.topic.trim();
   if (topic.length === 0) {
     return fail(1, null, null, [
@@ -28,10 +26,9 @@ export function cmdNew(_runRoot: string, options: NewOptions): HandlerResult {
   } catch (error) {
     return fail(1, null, null, [`E101: cannot use root ${root}: ${errorMessage(error)}`]);
   }
-  const runDir = uniqueRunDir(root, topic);
+  let runDir: string;
   try {
-    fs.mkdirSync(path.join(runDir, "steps"), { recursive: true });
-    fs.mkdirSync(path.join(runDir, "fetched"), { recursive: true });
+    runDir = createRunDirectory(root, topic);
     writePrompts(runDir, topic);
     const created = new Date().toISOString();
     writeState(runDir, initialState(topic, created, "brief"));
@@ -55,7 +52,7 @@ export function locateRun(root: string, options: LocateOptions = {}): string | n
   const explicit = options.runRoot;
   if (explicit) {
     const resolved = path.resolve(explicit);
-    if (fs.existsSync(statePath(resolved))) return resolved;
+    if (fs.existsSync(runLayout(resolved).stateFile)) return resolved;
     return null;
   }
   let entries: fs.Dirent[];
@@ -67,11 +64,11 @@ export function locateRun(root: string, options: LocateOptions = {}): string | n
   const runs = entries
     .filter((entry) => entry.isDirectory())
     .map((entry) => path.join(root, entry.name))
-    .filter((dir) => fs.existsSync(statePath(dir)))
+    .filter((dir) => fs.existsSync(runLayout(dir).stateFile))
     .sort();
   if (runs.length === 0) {
     // The root itself may be a run directory (e.g. --root points at it).
-    if (fs.existsSync(statePath(root))) return root;
+    if (fs.existsSync(runLayout(root).stateFile)) return root;
     return null;
   }
   // Deterministic: newest dated name wins (names sort chronologically).
@@ -88,12 +85,43 @@ export function noRunFound(root: string): HandlerResult {
   );
 }
 
+export type StateOrFail = { state: RunState } | { result: HandlerResult };
+
+/** Read state.json or produce the E401 failure envelope. */
+export function loadStateOrFail(runDir: string, step: StepName | null): StateOrFail {
+  try {
+    return { state: readState(runDir) };
+  } catch (error) {
+    return {
+      result: fail(4, runDir, step, [`E401: cannot read run state: ${errorMessage(error)}`]),
+    };
+  }
+}
+
+/** The E202 failure for a fulfill/execute on a non-takeable step. */
+export function notTakeable(runDir: string, want: string, actual: string): HandlerResult {
+  return fail(
+    2,
+    runDir,
+    actual,
+    [`E202: step ${want} is not takeable; the takeable step is ${actual}`],
+    `Step ${want} is not takeable now. The takeable step is ${actual}.`,
+  );
+}
+
+/** Persist the advance to the next step after completing `completed`. */
+export function advanceState(runDir: string, state: RunState, completed: StepName): void {
+  writeState(runDir, {
+    completed: [...state.completed, completed],
+    created: state.created,
+    step: nextStep(completed),
+    topic: state.topic,
+    version: 1,
+  });
+}
+
 export function readStepArg(raw: string): StepName | null {
   const trimmed = raw.trim();
   if (isStepName(trimmed)) return trimmed;
   return null;
-}
-
-export function stepMetaForHelp(step: StepName): (typeof STEPS)[StepName] {
-  return STEPS[step];
 }

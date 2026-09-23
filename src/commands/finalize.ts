@@ -1,39 +1,24 @@
 import * as fs from "node:fs";
-import * as path from "node:path";
 import type { ClaimsFile } from "../claims.js";
 import { fail, type HandlerResult, ok } from "../envelope.js";
 import { gateReport, generateSources, readClaimsFile, readMatrixFile } from "../report.js";
-import { type RunState, readState, writeState } from "../state.js";
-import { STEPS } from "../steps.js";
+import { runLayout } from "../rundir.js";
+import { errorMessage } from "../util.js";
 import type { Matrix } from "../verdicts.js";
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+import { advanceState, loadStateOrFail, notTakeable } from "./shared.js";
 
 /** Execute the finalize CLI step: run the report structure gate, generate
  *  sources.md from claims.json, and close the run at done. A failed gate
  *  lists violations, names synthesis as the fixing step, exits 2, and
  *  does not advance. */
 export function cmdFinalize(runDir: string): HandlerResult {
-  let state: RunState;
-  try {
-    state = readState(runDir);
-  } catch (error) {
-    return fail(4, runDir, null, [`E401: cannot read run state: ${errorMessage(error)}`]);
-  }
-  if (state.step !== "finalize") {
-    return fail(
-      2,
-      runDir,
-      state.step,
-      [`E202: step finalize is not takeable; the takeable step is ${state.step}`],
-      `Step finalize is not takeable now. The takeable step is ${state.step}.`,
-    );
-  }
+  const loaded = loadStateOrFail(runDir, null);
+  if ("result" in loaded) return loaded.result;
+  const state = loaded.state;
+  if (state.step !== "finalize") return notTakeable(runDir, "finalize", state.step);
   let report: string;
   try {
-    report = fs.readFileSync(path.join(runDir, "report.md"), "utf8");
+    report = fs.readFileSync(runLayout(runDir).reportFile, "utf8");
   } catch (error) {
     return fail(
       2,
@@ -69,23 +54,16 @@ export function cmdFinalize(runDir: string): HandlerResult {
       `Final gate failed:\n${violations.map((v) => `- ${v.message} (fix at ${v.fixableAt})`).join("\n")}\nRun does not advance.`,
     );
   }
+  const layout = runLayout(runDir);
   try {
-    fs.writeFileSync(path.join(runDir, "sources.md"), generateSources(claims), "utf8");
-    writeState(runDir, {
-      completed: [...state.completed, "finalize"],
-      created: state.created,
-      step: "done",
-      topic: state.topic,
-      version: 1,
-    });
+    fs.writeFileSync(layout.sourcesFile, generateSources(claims), "utf8");
+    advanceState(runDir, state, "finalize");
   } catch (error) {
     return fail(4, runDir, "finalize", [`E401: finalize failed: ${errorMessage(error)}`]);
   }
   const human =
     `Final gate passed. Run done.\n` +
-    `Report: ${path.join(runDir, "report.md")}\n` +
-    `Sources: ${path.join(runDir, "sources.md")}`;
+    `Report: ${layout.reportFile}\n` +
+    `Sources: ${layout.sourcesFile}`;
   return ok(runDir, "done", human, { gate: "passed", sources: "sources.md" });
 }
-
-export const finalizeStepMeta = STEPS.finalize;

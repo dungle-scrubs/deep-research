@@ -1,27 +1,21 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { fail, type HandlerResult, ok } from "../envelope.js";
-import { type RunState, readState } from "../state.js";
+import { type HandlerResult, ok } from "../envelope.js";
+import { readMatrixFile } from "../report.js";
 import { STEP_ORDER, STEPS, type StepName } from "../steps.js";
 import type { Matrix } from "../verdicts.js";
+import { loadStateOrFail } from "./shared.js";
 
 function readMatrix(runDir: string): Matrix | null {
   try {
-    const raw = fs.readFileSync(path.join(runDir, "state", "matrix.json"), "utf8");
-    return JSON.parse(raw) as Matrix;
+    return readMatrixFile(runDir);
   } catch {
     return null;
   }
 }
 
 export function cmdStatus(runDir: string): HandlerResult {
-  let state: RunState;
-  try {
-    state = readState(runDir);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return fail(4, runDir, null, [`E401: cannot read run state: ${message}`]);
-  }
+  const loaded = loadStateOrFail(runDir, null);
+  if ("result" in loaded) return loaded.result;
+  const state = loaded.state;
   const steps = STEP_ORDER.map((name: StepName) => ({
     completed: state.completed.includes(name),
     kind: STEPS[name].kind,

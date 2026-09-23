@@ -1,19 +1,20 @@
 import { z } from "zod";
-import type { Claim, ClaimsFile } from "./claims.js";
-import { readLedger } from "./fetch.js";
+import { CLAIM_ID_PATTERN, type ClaimsFile } from "./claims.js";
+import { type FetchStatus, readLedger } from "./fetch.js";
 import { normalizeUrl } from "./url.js";
+import { formatZodIssues, parseJsonText } from "./util.js";
 
 export const verdictValueSchema = z.enum(["supported", "partial", "not-found", "contradicts"]);
 
 export const verdictEntrySchema = z.union([
   z.object({
-    claimId: z.string().regex(/^c\d{3,}$/),
+    claimId: z.string().regex(CLAIM_ID_PATTERN),
     note: z.string().default(""),
     url: z.string().url(),
     verdict: verdictValueSchema,
   }),
   z.object({
-    claimId: z.string().regex(/^c\d{3,}$/),
+    claimId: z.string().regex(CLAIM_ID_PATTERN),
     conflict: z.literal(true),
     note: z.string().default(""),
   }),
@@ -36,15 +37,15 @@ export interface CitationRow {
   readonly url: string;
   readonly normalized: string;
   readonly document: string;
-  readonly verdict: VerdictEntry extends never ? never : string | null;
+  readonly verdict: z.infer<typeof verdictValueSchema> | null;
   readonly reachable: boolean;
-  readonly ledgerStatus: string | null;
+  readonly ledgerStatus: FetchStatus | null;
 }
 
 export interface MatrixClaim {
   readonly id: string;
   readonly statement: string;
-  readonly tier: number;
+  readonly tier: 1 | 2 | 3;
   readonly status: ClaimStatus;
   readonly citations: readonly CitationRow[];
 }
@@ -113,30 +114,34 @@ export function validateVerdicts(
   raw: string,
   claims: ClaimsFile,
 ): { entries: VerdictEntry[]; issues: VerdictIssue[] } {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { entries: [], issues: [{ message: `not valid JSON: ${message}`, path: "(root)" }] };
+  const { parsed, error } = parseJsonText(raw);
+  if (error !== null) {
+    return { entries: [], issues: [{ message: `not valid JSON: ${error}`, path: "(root)" }] };
   }
   const result = verdictsFileSchema.safeParse(parsed);
   if (!result.success) {
     return {
       entries: [],
-      issues: result.error.issues.map((issue) => ({
-        message: issue.message,
-        path: issue.path.length > 0 ? issue.path.join(".") : "(root)",
-      })),
+      issues: formatZodIssues(result.error).map((line) => {
+        const separator = line.indexOf(": ");
+        return { message: line.slice(separator + 2), path: line.slice(0, separator) };
+      }),
     };
   }
   const entries = result.data;
   const issues: VerdictIssue[] = [];
-  const claimIds = new Set(claims.map((claim) => claim.id));
+  const citationsByClaim = new Map<string, Set<string>>();
+  for (const claim of claims) {
+    citationsByClaim.set(
+      claim.id,
+      new Set(claim.citations.map((citation) => normalizeUrl(citation.url))),
+    );
+  }
   const seenPairs = new Set<string>();
   const conflictsFor = new Set<string>();
   entries.forEach((entry, index) => {
-    if (!claimIds.has(entry.claimId)) {
+    const knownCitations = citationsByClaim.get(entry.claimId);
+    if (knownCitations === undefined) {
       issues.push({ message: `unknown claimId ${entry.claimId}`, path: `${index}` });
       return;
     }
@@ -147,10 +152,8 @@ export function validateVerdicts(
       conflictsFor.add(entry.claimId);
       return;
     }
-    const claim = claims.find((candidate) => candidate.id === entry.claimId) as Claim;
     const normalized = normalizeUrl(entry.url);
-    const known = claim.citations.some((citation) => normalizeUrl(citation.url) === normalized);
-    if (!known) {
+    if (!knownCitations.has(normalized)) {
       issues.push({
         message: `${entry.url} is not a citation of ${entry.claimId}`,
         path: `${index}.url`,
@@ -181,7 +184,7 @@ export function deriveMatrix(
     for (const citation of claim.citations) documents.add(citation.url, citation.sameStudyAs);
   }
   const ledger = new Map(readLedger(runDir).map((entry) => [entry.normalized, entry.status]));
-  const verdictFor = new Map<string, string>();
+  const verdictFor = new Map<string, z.infer<typeof verdictValueSchema>>();
   const conflictClaims = new Set<string>();
   for (const entry of entries) {
     if ("conflict" in entry) conflictClaims.add(entry.claimId);

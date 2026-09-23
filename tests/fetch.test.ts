@@ -3,7 +3,8 @@ import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { fetchAll, type LedgerEntry, ledgerPath, readLedger } from "../src/fetch.js";
+import { fetchAll, type LedgerEntry, readLedger } from "../src/fetch.js";
+import { runLayout } from "../src/rundir.js";
 import { normalizeUrl, urlHash } from "../src/url.js";
 
 let workdir: string;
@@ -236,6 +237,6 @@ describe("fetch engine", () => {
     });
     expect(entries).toHaveLength(1);
     expect(hits["/doc?a=1"]).toBe(1);
-    expect(fs.existsSync(ledgerPath(workdir))).toBe(true);
+    expect(fs.existsSync(runLayout(workdir).ledgerFile)).toBe(true);
   });
 });

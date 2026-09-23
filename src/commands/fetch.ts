@@ -1,17 +1,14 @@
 import { readFileSync } from "node:fs";
-import * as path from "node:path";
 import { parseClaims } from "../claims.js";
 import { fail, type HandlerResult, ok } from "../envelope.js";
 import { fetchAll, type LedgerEntry, readLedger } from "../fetch.js";
-import { type RunState, readState, writeState } from "../state.js";
-import { nextStep, STEPS } from "../steps.js";
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+import { runLayout } from "../rundir.js";
+import { STEPS } from "../steps.js";
+import { countBy, errorMessage } from "../util.js";
+import { advanceState, loadStateOrFail, notTakeable } from "./shared.js";
 
 function citedUrls(runDir: string): string[] {
-  const raw = readFileSync(path.join(runDir, "steps", "claims.json"), "utf8");
+  const raw = readFileSync(runLayout(runDir).step("claims.json"), "utf8");
   const { claims, issues } = parseClaims(raw);
   if (!claims) {
     throw new Error(`claims.json no longer validates: ${issues.map((i) => i.message).join("; ")}`);
@@ -20,30 +17,19 @@ function citedUrls(runDir: string): string[] {
 }
 
 function summarize(entries: readonly LedgerEntry[]): string {
-  const counts = new Map<string, number>();
-  for (const entry of entries) counts.set(entry.status, (counts.get(entry.status) ?? 0) + 1);
-  return [...counts.entries()].map(([status, n]) => `${status}: ${n}`).join(", ");
+  return [...countBy(entries, (entry) => entry.status)]
+    .map(([status, n]) => `${status}: ${n}`)
+    .join(", ");
 }
 
 /** Execute the fetch step (CLI step): fetch every cited URL once, record
  *  the ledger, advance to verdicts. Unreachable is an outcome, never a run
  *  failure. */
 export async function cmdFetch(runDir: string): Promise<HandlerResult> {
-  let state: RunState;
-  try {
-    state = readState(runDir);
-  } catch (error) {
-    return fail(4, runDir, null, [`E401: cannot read run state: ${errorMessage(error)}`]);
-  }
-  if (state.step !== "fetch") {
-    return fail(
-      2,
-      runDir,
-      state.step,
-      [`E202: step fetch is not takeable; the takeable step is ${state.step}`],
-      `Step fetch is not takeable now. The takeable step is ${state.step}.`,
-    );
-  }
+  const loaded = loadStateOrFail(runDir, null);
+  if ("result" in loaded) return loaded.result;
+  const state = loaded.state;
+  if (state.step !== "fetch") return notTakeable(runDir, "fetch", state.step);
   let urls: string[];
   try {
     urls = citedUrls(runDir);
@@ -57,25 +43,20 @@ export async function cmdFetch(runDir: string): Promise<HandlerResult> {
     return fail(4, runDir, "fetch", [`E401: fetch failed: ${errorMessage(error)}`]);
   }
   try {
-    writeState(runDir, {
-      completed: [...state.completed, "fetch"],
-      created: state.created,
-      step: nextStep("fetch"),
-      topic: state.topic,
-      version: 1,
-    });
+    advanceState(runDir, state, "fetch");
   } catch (error) {
     return fail(4, runDir, "fetch", [
       `E402: fetch recorded but state advance failed: ${errorMessage(error)}`,
     ]);
   }
   const meta = STEPS.verdicts;
+  const counts = summarize(entries);
   const human =
-    `Fetch complete: ${summarize(entries)}\n` +
-    `Ledger: ${path.join(runDir, "state", "fetch-ledger.json")}\n` +
+    `Fetch complete: ${counts}\n` +
+    `Ledger: ${runLayout(runDir).ledgerFile}\n` +
     `Next: verdicts (output: ${meta.output}; then dr fulfill verdicts <file>)`;
   return ok(runDir, "verdicts", human, {
-    counts: summarize(entries),
+    counts,
     entries,
     next: "verdicts",
   });
@@ -83,12 +64,9 @@ export async function cmdFetch(runDir: string): Promise<HandlerResult> {
 
 /** dr retry-fetch: re-attempt unreachable URLs idempotently; keep ok pages. */
 export async function cmdRetryFetch(runDir: string): Promise<HandlerResult> {
-  let state: RunState;
-  try {
-    state = readState(runDir);
-  } catch (error) {
-    return fail(4, runDir, null, [`E401: cannot read run state: ${errorMessage(error)}`]);
-  }
+  const loaded = loadStateOrFail(runDir, null);
+  if ("result" in loaded) return loaded.result;
+  const state = loaded.state;
   if (state.step === "done") {
     return fail(
       2,
@@ -113,18 +91,17 @@ export async function cmdRetryFetch(runDir: string): Promise<HandlerResult> {
   } catch (error) {
     return fail(4, runDir, state.step, [`E401: ${errorMessage(error)}`]);
   }
+  const priorNormalized = new Set(readLedger(runDir).map((entry) => entry.normalized));
   let entries: readonly LedgerEntry[];
   try {
     entries = await fetchAll({ retryOnly: true, runDir, urls });
   } catch (error) {
     return fail(4, runDir, state.step, [`E401: retry-fetch failed: ${errorMessage(error)}`]);
   }
-  const before = readLedger(runDir);
-  const human = `Retry-fetch complete: ${summarize(entries)}\nLedger: ${path.join(runDir, "state", "fetch-ledger.json")}`;
+  const counts = summarize(entries);
+  const human = `Retry-fetch complete: ${counts}\nLedger: ${runLayout(runDir).ledgerFile}`;
   return ok(runDir, state.step, human, {
-    counts: summarize(entries),
-    entries: entries.filter(
-      (entry) => before.find((prior) => prior.normalized === entry.normalized) === undefined,
-    ),
+    counts,
+    entries: entries.filter((entry) => !priorNormalized.has(entry.normalized)),
   });
 }

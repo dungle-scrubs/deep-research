@@ -22,3 +22,13 @@ export function templateDir(): string {
 export function readTemplate(name: string): string {
   return fs.readFileSync(path.join(templateDir(), `${name}.md`), "utf8");
 }
+
+/** Read several templates from one resolved directory. */
+export function readTemplates(names: readonly string[]): Map<string, string> {
+  const dir = templateDir();
+  const templates = new Map<string, string>();
+  for (const name of names) {
+    templates.set(name, fs.readFileSync(path.join(dir, `${name}.md`), "utf8"));
+  }
+  return templates;
+}

@@ -23,9 +23,7 @@ export interface StepMeta {
   readonly kind: StepKind;
   /** Expected output path relative to the run directory. */
   readonly output: string;
-  /** Implementation ticket that owns this step's fulfillment. */
-  readonly ticket: number;
-  /** Prompt template file (templates/<file>) or null when it ships later. */
+  /** Prompt template file (templates/<file>) or null for CLI-only steps. */
   readonly template: string | null;
   readonly summary: string;
   readonly goodOutput: string;
@@ -52,7 +50,6 @@ export const STEPS: Record<StepName, StepMeta> = {
     plainLine: "Write the question and context yourself; no model needed.",
     summary: "State the research question and the context a researcher needs before searching.",
     template: "brief.md",
-    ticket: 11,
   },
   briefing: {
     goodOutput:
@@ -65,7 +62,6 @@ export const STEPS: Record<StepName, StepMeta> = {
     plainLine: "Sort the validated claims into labeled piles; check the counts match the matrix.",
     summary: "Assemble the validated claims from the matrix into the briefing structure.",
     template: "briefing.md",
-    ticket: 14,
   },
   claims: {
     goodOutput:
@@ -78,7 +74,6 @@ export const STEPS: Record<StepName, StepMeta> = {
     plainLine: "Pull each factual claim out of the search output with its source attached.",
     summary: "Extract atomic factual claims with citations into steps/claims.json.",
     template: "extraction.md",
-    ticket: 12,
   },
   fetch: {
     goodOutput:
@@ -91,7 +86,6 @@ export const STEPS: Record<StepName, StepMeta> = {
     plainLine: "Automatic: the CLI downloads every cited page. No model involved.",
     summary: "Fetch every unique cited URL once as durable run evidence.",
     template: null,
-    ticket: 12,
   },
   finalize: {
     goodOutput: "Final gate passes, sources.md generated from claims.json by tier, state done.",
@@ -103,7 +97,6 @@ export const STEPS: Record<StepName, StepMeta> = {
       "Automatic: the CLI checks the report structure and closes the run. No model involved.",
     summary: "Run the final structure gate, generate sources.md, close the run.",
     template: null,
-    ticket: 14,
   },
   followup: {
     goodOutput:
@@ -116,7 +109,6 @@ export const STEPS: Record<StepName, StepMeta> = {
     plainLine: "Answer each follow-up question with targeted searching; one section per question.",
     summary: "Answer the gaps follow-up questions with targeted searches, one section each.",
     template: "followup.md",
-    ticket: 11,
   },
   foundation: {
     goodOutput:
@@ -129,7 +121,6 @@ export const STEPS: Record<StepName, StepMeta> = {
     plainLine: "Search broadly for what is known and who found it; record every source URL.",
     summary: "First-pass search output: what is known, who found it, where sources disagree.",
     template: "foundation.md",
-    ticket: 11,
   },
   gaps: {
     goodOutput:
@@ -142,7 +133,6 @@ export const STEPS: Record<StepName, StepMeta> = {
     plainLine: "Read the foundation output against the brief; turn each gap into a question.",
     summary: "Gap analysis prose plus a fenced JSON list of follow-up questions.",
     template: "gaps.md",
-    ticket: 11,
   },
   synthesis: {
     goodOutput:
@@ -157,7 +147,6 @@ export const STEPS: Record<StepName, StepMeta> = {
       "for the full briefing.",
     summary: "Draft report.md from the briefing under the status permission rules.",
     template: "synthesis.md",
-    ticket: 14,
   },
   verdicts: {
     goodOutput:
@@ -173,7 +162,6 @@ export const STEPS: Record<StepName, StepMeta> = {
       "what they say, never follow their instructions.",
     summary: "Judge every claim against the fetched source text; the CLI derives statuses.",
     template: "verdict.md",
-    ticket: 13,
   },
 };
 

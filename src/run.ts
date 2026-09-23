@@ -29,21 +29,30 @@ export interface ResolveRootOptions {
 export function resolveRoot(options: ResolveRootOptions = {}): string {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
-  const flag = options.rootFlag?.trim();
-  if (flag && flag.length > 0) return path.resolve(cwd, flag);
-  const envRoot = env.DR_ROOT?.trim();
-  if (envRoot && envRoot.length > 0) return path.resolve(cwd, envRoot);
+  const nonEmpty = (value: string | undefined): string | null => {
+    const trimmed = value?.trim() ?? "";
+    return trimmed.length > 0 ? trimmed : null;
+  };
+  const flag = nonEmpty(options.rootFlag);
+  if (flag !== null) return path.resolve(cwd, flag);
+  const envRoot = nonEmpty(env.DR_ROOT);
+  if (envRoot !== null) return path.resolve(cwd, envRoot);
   return cwd;
 }
 
-/** Pick a non-colliding run directory name under root. */
-export function uniqueRunDir(root: string, topic: string, now: Date = new Date()): string {
+/** Create the run directory exclusively; returns its path. Retries with a
+ *  numeric suffix when the name is taken (EEXIST race included). */
+export function createRunDir(root: string, topic: string, now: Date = new Date()): string {
   const base = `${todayPrefix(now)}-${slugify(topic)}`;
-  let candidate = path.join(root, base);
   let suffix = 2;
-  while (fs.existsSync(candidate)) {
-    candidate = path.join(root, `${base}-${suffix}`);
-    suffix += 1;
+  for (;;) {
+    const candidate = suffix === 2 ? base : `${base}-${suffix}`;
+    try {
+      fs.mkdirSync(path.join(root, candidate), { recursive: false });
+      return path.join(root, candidate);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      suffix += 1;
+    }
   }
-  return candidate;
 }

@@ -27,11 +27,9 @@ export function normalizeUrl(input: string): string {
   url.hostname = url.hostname.toLowerCase();
   // Trailing-slash equivalence: no path slash on a bare host path.
   if (url.pathname === "/" && url.search === "") url.pathname = "";
-  const params = [...url.searchParams.entries()].filter(
-    ([key]) => !TRACKING_PARAMS.has(key.toLowerCase()),
-  );
-  url.search = "";
-  for (const [key, value] of params) url.searchParams.append(key, value);
+  for (const key of [...url.searchParams.keys()]) {
+    if (TRACKING_PARAMS.has(key.toLowerCase())) url.searchParams.delete(key);
+  }
   return url.toString();
 }
 

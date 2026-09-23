@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
-import * as path from "node:path";
-import type { Claim, ClaimsFile } from "./claims.js";
+import { CLAIM_ID_PATTERN, type Claim, type ClaimsFile } from "./claims.js";
+import { runLayout } from "./rundir.js";
+import { hasUrl } from "./validate.js";
 import type { Matrix } from "./verdicts.js";
 
 const REQUIRED_SECTIONS = [
@@ -78,16 +79,8 @@ export function gateReport(report: string, matrix: Matrix): readonly GateViolati
     (section) => section.heading.toLowerCase() === "discarded claims",
   );
   const evidenceRows = evidence ? parseTable(evidence.body) : [];
-  const header = evidenceRows[0] ?? [];
-  const hasHeader =
-    header
-      .map((cell) => cell.toLowerCase())
-      .join("|")
-      .includes("claim") &&
-    header
-      .map((cell) => cell.toLowerCase())
-      .join("|")
-      .includes("status");
+  const header = (evidenceRows[0] ?? []).map((cell) => cell.toLowerCase());
+  const hasHeader = header[0] === "claim" && header[2] === "status";
   if (!hasHeader) {
     violations.push({
       fixableAt: fixable,
@@ -99,8 +92,9 @@ export function gateReport(report: string, matrix: Matrix): readonly GateViolati
   const rowForClaim = new Map<string, string[]>();
   for (const row of bodyRows) {
     const id = row[0] ?? "";
-    if (/^c\d{3,}$/.test(id)) rowForClaim.set(id, row);
+    if (CLAIM_ID_PATTERN.test(id)) rowForClaim.set(id, row);
   }
+  const discardedText = (discarded?.body ?? "").toLowerCase();
 
   for (const claim of matrix.claims) {
     const row = rowForClaim.get(claim.id);
@@ -120,7 +114,7 @@ export function gateReport(report: string, matrix: Matrix): readonly GateViolati
         });
       }
       const citationCell = row[1] ?? "";
-      if (!/https?:\/\//.test(citationCell) && citationCell.length === 0) {
+      if (!hasUrl(citationCell) && citationCell.length === 0) {
         violations.push({
           fixableAt: fixable,
           message: `claim ${claim.id}: evidence table citation cell is empty`,
@@ -137,7 +131,6 @@ export function gateReport(report: string, matrix: Matrix): readonly GateViolati
       }
     }
     if (["misrepresented", "not-found"].includes(claim.status)) {
-      const discardedText = (discarded?.body ?? "").toLowerCase();
       if (!discardedText.includes(claim.id.toLowerCase())) {
         violations.push({
           fixableAt: fixable,
@@ -217,11 +210,11 @@ export function generateSources(claims: ClaimsFile): string {
 }
 
 export function readMatrixFile(runDir: string): Matrix {
-  return JSON.parse(fs.readFileSync(path.join(runDir, "state", "matrix.json"), "utf8")) as Matrix;
+  return JSON.parse(fs.readFileSync(runLayout(runDir).matrixFile, "utf8")) as Matrix;
 }
 
 export function readClaimsFile(runDir: string): ClaimsFile {
-  const raw = fs.readFileSync(path.join(runDir, "steps", "claims.json"), "utf8");
+  const raw = fs.readFileSync(runLayout(runDir).step("claims.json"), "utf8");
   const parsed: unknown = JSON.parse(raw);
   if (!Array.isArray(parsed)) throw new Error("claims.json is not an array");
   return parsed as ClaimsFile;

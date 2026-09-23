@@ -4,19 +4,17 @@ import { type ClaimsFile, parseClaims } from "../claims.js";
 import { fail, type HandlerResult, ok } from "../envelope.js";
 import { renderFollowupWithQuestions } from "../prompts.js";
 import { checkBriefingCoverage, readMatrixFile } from "../report.js";
-import { type RunState, readState, writeState } from "../state.js";
+import { runLayout } from "../rundir.js";
 import { nextStep, STEPS, type StepName } from "../steps.js";
+import { countBy, errorMessage } from "../util.js";
 import { extractGapsQuestions, type ProseStep, readTextFile, validateProse } from "../validate.js";
-import { deriveMatrix, validateVerdicts } from "../verdicts.js";
+import { deriveMatrix, type VerdictEntry, validateVerdicts } from "../verdicts.js";
+import { advanceState, loadStateOrFail, notTakeable } from "./shared.js";
 
 const PROSE_STEPS: ReadonlySet<string> = new Set(["brief", "foundation", "gaps", "followup"]);
 
 export function isProseStep(step: StepName): step is ProseStep {
   return PROSE_STEPS.has(step);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export interface FulfillOptions {
@@ -30,12 +28,9 @@ export interface FulfillOptions {
  *  and state is written after the output file lands. */
 export function cmdFulfill(options: FulfillOptions): HandlerResult {
   const { runDir, step } = options;
-  let state: RunState;
-  try {
-    state = readState(runDir);
-  } catch (error) {
-    return fail(4, runDir, step, [`E401: cannot read run state: ${errorMessage(error)}`]);
-  }
+  const loaded = loadStateOrFail(runDir, step);
+  if ("result" in loaded) return loaded.result;
+  const state = loaded.state;
   if (state.step === "done") {
     return fail(
       2,
@@ -45,15 +40,7 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
       "Run is done. A closed run can be read (status, help) but not advanced.",
     );
   }
-  if (step !== state.step) {
-    return fail(
-      2,
-      runDir,
-      state.step,
-      [`E202: step ${step} is not takeable; the takeable step is ${state.step}`],
-      `Step ${step} is not takeable now. The takeable step is ${state.step}.`,
-    );
-  }
+  if (step !== state.step) return notTakeable(runDir, step, state.step);
   if (
     step !== "claims" &&
     step !== "verdicts" &&
@@ -61,16 +48,12 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
     step !== "synthesis" &&
     !isProseStep(step)
   ) {
-    const scopeMeta = STEPS[step];
     return fail(
       2,
       runDir,
       step,
-      [
-        `E203: step ${step} is not fulfillable in this slice (owned by ticket #${scopeMeta.ticket}); ` +
-          `the takeable step is ${state.step}`,
-      ],
-      `Step ${step} is not part of this ticket's scope (ticket #${scopeMeta.ticket}).`,
+      [`E203: step ${step} is a CLI step executed by dr next; it is not fulfilled with a file`],
+      `Step ${step} runs on dr next, not dr fulfill.`,
     );
   }
 
@@ -83,6 +66,8 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
 
   let violations: readonly string[];
   let parsedClaims: ClaimsFile | null = null;
+  let verdictEntries: readonly VerdictEntry[] | null = null;
+  let claimsJsonRaw: string | null = null;
   if (step === "claims") {
     const { claims, issues } = parseClaims(text);
     parsedClaims = claims;
@@ -96,8 +81,8 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
       }
     }
   } else if (step === "verdicts") {
-    const claimsRaw = fs.readFileSync(path.join(runDir, "steps", "claims.json"), "utf8");
-    const { claims, issues } = parseClaims(claimsRaw);
+    claimsJsonRaw = fs.readFileSync(runLayout(runDir).step("claims.json"), "utf8");
+    const { claims, issues } = parseClaims(claimsJsonRaw);
     if (!claims) {
       violations = [
         `E205: verdicts: steps/claims.json no longer validates: ${issues
@@ -106,7 +91,8 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
       ];
     } else {
       parsedClaims = claims;
-      const { issues: verdictIssues } = validateVerdicts(text, claims);
+      const { entries, issues: verdictIssues } = validateVerdicts(text, claims);
+      verdictEntries = entries;
       violations = verdictIssues.map((issue) => `E205: verdicts: ${issue.path}: ${issue.message}`);
     }
   } else if (step === "briefing") {
@@ -139,7 +125,7 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
   }
 
   const meta = STEPS[step];
-  const dest = path.join(runDir, meta.output);
+  const dest = path.join(runLayout(runDir).runDir, meta.output);
   try {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, text, "utf8");
@@ -147,11 +133,10 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
     return fail(4, runDir, step, [`E401: cannot write step output: ${errorMessage(error)}`]);
   }
 
-  // Gaps fulfill feeds the follow-up template deterministically.
   if (step === "gaps") {
     const { questions } = extractGapsQuestions(text);
     try {
-      const copyPath = path.join(runDir, "prompts", "followup.md");
+      const copyPath = runLayout(runDir).prompt("followup");
       const copy = fs.readFileSync(copyPath, "utf8");
       const rendered = renderFollowupWithQuestions(copy, state.topic, questions);
       fs.writeFileSync(copyPath, rendered, "utf8");
@@ -162,26 +147,24 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
     }
   }
 
-  // Verdicts fulfill runs the deterministic derivation into state/matrix.json.
+  // The before/after byte check guards the RFC rule that derivation never
+  // rewrites steps/claims.json.
   let matrixSummary: string | null = null;
-  if (step === "verdicts" && parsedClaims) {
+  if (step === "verdicts" && parsedClaims && verdictEntries && claimsJsonRaw !== null) {
     try {
-      const before = fs.readFileSync(path.join(runDir, "steps", "claims.json"), "utf8");
-      const { entries } = validateVerdicts(text, parsedClaims);
-      const matrix = deriveMatrix(parsedClaims, entries, runDir, new Date().toISOString());
-      const matrixPath = path.join(runDir, "state", "matrix.json");
-      fs.mkdirSync(path.dirname(matrixPath), { recursive: true });
-      fs.writeFileSync(matrixPath, `${JSON.stringify(matrix, null, 2)}\n`, "utf8");
-      const after = fs.readFileSync(path.join(runDir, "steps", "claims.json"), "utf8");
-      if (after !== before) {
+      const matrix = deriveMatrix(parsedClaims, verdictEntries, runDir, new Date().toISOString());
+      const layout = runLayout(runDir);
+      fs.mkdirSync(layout.stateDir, { recursive: true });
+      fs.writeFileSync(layout.matrixFile, `${JSON.stringify(matrix, null, 2)}\n`, "utf8");
+      const after = fs.readFileSync(layout.step("claims.json"), "utf8");
+      if (after !== claimsJsonRaw) {
         return fail(4, runDir, step, [
           "E401: derivation would rewrite steps/claims.json; matrix discarded",
         ]);
       }
-      const counts = new Map<string, number>();
-      for (const claim of matrix.claims)
-        counts.set(claim.status, (counts.get(claim.status) ?? 0) + 1);
-      matrixSummary = [...counts.entries()].map(([s, n]) => `${s}: ${n}`).join(", ");
+      matrixSummary = [...countBy(matrix.claims, (claim) => claim.status)]
+        .map(([status, n]) => `${status}: ${n}`)
+        .join(", ");
     } catch (error) {
       return fail(4, runDir, step, [
         `E401: verdicts saved but derivation failed: ${errorMessage(error)}`,
@@ -191,17 +174,11 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
 
   const advanced = nextStep(step);
   try {
-    writeState(runDir, {
-      completed: [...state.completed, step],
-      created: state.created,
-      step: advanced,
-      topic: state.topic,
-      version: 1,
-    });
+    advanceState(runDir, state, step);
   } catch (error) {
     return fail(4, runDir, step, [
       `E402: output saved to ${meta.output} but state advance failed: ${errorMessage(error)}; ` +
-        `state file: ${path.join(runDir, "state", "state.json")}`,
+        `state file: ${runLayout(runDir).stateFile}`,
     ]);
   }
 
