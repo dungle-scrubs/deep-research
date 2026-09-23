@@ -5,7 +5,7 @@ import { readTemplate } from "./templates.js";
 export const TOPIC_SLOT = "{{TOPIC}}";
 export const QUESTIONS_SLOT = "{{QUESTIONS}}";
 
-const STEPS_WITH_TOPIC = ["brief", "foundation", "gaps", "followup"] as const;
+const STEPS_WITH_TOPIC = ["brief", "foundation", "gaps", "followup", "extraction"] as const;
 export type TemplateStep = (typeof STEPS_WITH_TOPIC)[number];
 
 export function substituteTopic(template: string, topic: string): string {
@@ -23,6 +23,7 @@ export function substituteQuestions(template: string, questions: readonly string
 export function renderAllPrompts(topic: string): Record<TemplateStep, string> {
   return {
     brief: substituteTopic(readTemplate("brief"), topic),
+    extraction: substituteTopic(readTemplate("extraction"), topic),
     foundation: substituteTopic(readTemplate("foundation"), topic),
     followup: substituteTopic(readTemplate("followup"), topic),
     gaps: substituteTopic(readTemplate("gaps"), topic),

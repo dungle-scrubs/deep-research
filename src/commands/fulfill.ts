@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { parseClaims } from "../claims.js";
 import { fail, type HandlerResult, ok } from "../envelope.js";
 import { renderFollowupWithQuestions } from "../prompts.js";
 import { type RunState, readState, writeState } from "../state.js";
@@ -51,17 +52,17 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
       `Step ${step} is not takeable now. The takeable step is ${state.step}.`,
     );
   }
-  if (!isProseStep(step)) {
-    const meta = STEPS[step];
+  if (step !== "claims" && !isProseStep(step)) {
+    const scopeMeta = STEPS[step];
     return fail(
       2,
       runDir,
       step,
       [
-        `E203: step ${step} is not fulfilled in ticket #11 (owned by ticket #${meta.ticket}); ` +
-          `fulfill the takeable prose step ${state.step} instead`,
+        `E203: step ${step} is not fulfillable in this slice (owned by ticket #${scopeMeta.ticket}); ` +
+          `the takeable step is ${state.step}`,
       ],
-      `Step ${step} is not part of this ticket's scope (ticket #${meta.ticket}).`,
+      `Step ${step} is not part of this ticket's scope (ticket #${scopeMeta.ticket}).`,
     );
   }
 
@@ -72,7 +73,21 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
     return fail(2, runDir, step, [`E204: cannot read fulfill file: ${errorMessage(error)}`]);
   }
 
-  const violations = validateProse(step, text).map((v) => `E205: ${v}`);
+  let violations: readonly string[];
+  if (step === "claims") {
+    const { claims, issues } = parseClaims(text);
+    violations = issues.map((issue) => `E205: claims: ${issue.path}: ${issue.message}`);
+    if (claims) {
+      const seen = new Set<string>();
+      for (const claim of claims) {
+        if (seen.has(claim.id))
+          violations = [...violations, `E205: claims: ${claim.id}: duplicate claim id`];
+        seen.add(claim.id);
+      }
+    }
+  } else {
+    violations = validateProse(step, text).map((v) => `E205: ${v}`);
+  }
   if (violations.length > 0) {
     return fail(
       2,

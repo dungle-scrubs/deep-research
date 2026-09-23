@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { cmdFetch, cmdRetryFetch } from "./commands/fetch.js";
 import { cmdFulfill } from "./commands/fulfill.js";
 import { cmdHelp } from "./commands/help.js";
 import { cmdNext } from "./commands/next.js";
@@ -6,6 +7,7 @@ import { cmdNew, locateRun, noRunFound, readStepArg } from "./commands/shared.js
 import { cmdStatus } from "./commands/status.js";
 import type { HandlerResult } from "./envelope.js";
 import { resolveRoot } from "./run.js";
+import { readState, type RunState } from "./state.js";
 
 function emit(result: HandlerResult, asJson: boolean): void {
   if (asJson) {
@@ -42,11 +44,36 @@ export function buildProgram(): Command {
     .description("Name the single takeable step with its prompt and output location")
     .option("--root <dir>", "run root directory (overrides DR_ROOT and cwd)")
     .option("--json", "emit the stable envelope {ok, run, step, errors[]}")
-    .action((opts: { root?: string; json?: boolean }) => {
+    .action(async (opts: { root?: string; json?: boolean }) => {
       const root = resolveRoot({ rootFlag: opts.root });
       const runDir = locateRun(root);
       if (!runDir) {
         emit(noRunFound(root), opts.json === true);
+        return;
+      }
+      // CLI steps execute when takeable; the fetch step runs here.
+      let state: RunState;
+      try {
+        state = readState(runDir);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        emit(
+          {
+            code: 4,
+            envelope: {
+              errors: [`E401: cannot read run state: ${message}`],
+              ok: false,
+              run: runDir,
+              step: null,
+            },
+            human: `Cannot read run state: ${message}`,
+          },
+          opts.json === true,
+        );
+        return;
+      }
+      if (state.step === "fetch") {
+        emit(await cmdFetch(runDir), opts.json === true);
         return;
       }
       emit(cmdNext(runDir), opts.json === true);
@@ -85,6 +112,21 @@ export function buildProgram(): Command {
         return;
       }
       emit(cmdFulfill({ file, runDir, step }), asJson);
+    });
+
+  program
+    .command("retry-fetch")
+    .description("Re-attempt unreachable URLs idempotently; keeps fetched pages")
+    .option("--root <dir>", "run root directory (overrides DR_ROOT and cwd)")
+    .option("--json", "emit the stable envelope {ok, run, step, errors[]}")
+    .action(async (opts: { root?: string; json?: boolean }) => {
+      const root = resolveRoot({ rootFlag: opts.root });
+      const runDir = locateRun(root);
+      if (!runDir) {
+        emit(noRunFound(root), opts.json === true);
+        return;
+      }
+      emit(await cmdRetryFetch(runDir), opts.json === true);
     });
 
   program

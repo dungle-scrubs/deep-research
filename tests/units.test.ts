@@ -1,6 +1,75 @@
 import { describe, expect, it } from "vitest";
+import { parseRobots } from "../src/fetch.js";
 import { slugify } from "../src/run.js";
+import { guardUrl } from "../src/ssrf.js";
+import { normalizeUrl, urlHash } from "../src/url.js";
 import { extractGapsQuestions, hasUrl, parsesAsMarkdown, validateProse } from "../src/validate.js";
+
+// SSRF guard: literal addresses only here; DNS-based cases would hit the
+// network. The engine tests cover resolution behavior.
+const GUARD_LITERALS: readonly [string, boolean][] = [
+  ["http://127.0.0.1/", false],
+  ["http://10.0.0.1/", false],
+  ["http://172.16.1.1/", false],
+  ["http://192.168.1.1/", false],
+  ["http://169.254.169.254/", false],
+  ["http://100.64.1.1/", false],
+  ["http://0.0.0.0/", false],
+  ["http://[::1]/", false],
+  ["http://[fe80::1]/", false],
+  ["http://[fd12::1]/", false],
+  ["http://[::ffff:127.0.0.1]/", false],
+  ["http://foo.local/", false],
+  ["http://localhost/", false],
+  ["file:///etc/passwd", false],
+  ["ftp://example.com/", false],
+  ["http://example.com:8080/", false],
+  ["https://1.1.1.1/", true],
+];
+
+describe("guardUrl literals", () => {
+  for (const [url, expected] of GUARD_LITERALS) {
+    it(`${expected ? "allows" : "refuses"} ${url}`, async () => {
+      const verdict = await guardUrl(url);
+      expect(verdict.allowed).toBe(expected);
+    });
+  }
+});
+
+describe("normalizeUrl", () => {
+  it("lowercases scheme and host, strips fragment and tracking params", () => {
+    expect(normalizeUrl("HTTPS://Example.COM/a?utm_source=x&keep=1#frag")).toBe(
+      "https://example.com/a?keep=1",
+    );
+  });
+  it("treats trailing slash on a bare host as equivalent", () => {
+    expect(normalizeUrl("https://example.com/")).toBe(normalizeUrl("https://example.com"));
+  });
+  it("makes one normalized URL one document", () => {
+    const a = normalizeUrl("https://example.com/a?utm_campaign=z&id=7");
+    const b = normalizeUrl("https://example.com/a?id=7");
+    expect(a).toBe(b);
+    expect(urlHash(a)).toBe(urlHash(b));
+  });
+  it("keeps different params as different documents", () => {
+    expect(normalizeUrl("https://example.com/a?x=1")).not.toBe(
+      normalizeUrl("https://example.com/a?y=1"),
+    );
+  });
+});
+
+describe("parseRobots", () => {
+  it("collects disallow rules for the star agent only", () => {
+    const body =
+      "User-agent: goog\nDisallow: /no\n\nUser-agent: *\nDisallow: /private\nDisallow: /tmp";
+    expect(parseRobots(body)).toEqual(["/private", "/tmp"]);
+  });
+  it("ignores comments and blank rules", () => {
+    expect(parseRobots("# comment\nUser-agent: *\nDisallow: \nDisallow: /a # trailing")).toEqual([
+      "/a",
+    ]);
+  });
+});
 
 describe("validateProse", () => {
   it("accepts a minimal brief", () => {

@@ -28,16 +28,24 @@ export function cmdNext(runDir: string): HandlerResult {
     );
   }
   const meta = STEPS[state.step];
-  // Ticket #11 owns the four prose steps. Every later step - caller or CLI -
-  // is named here with its owning ticket instead of executing.
-  if (meta.ticket !== 11) {
+  // Caller steps implemented so far (tickets #11 and #12). The fetch CLI
+  // step never reaches this branch: dr next executes it directly. Later
+  // steps are named with their owning ticket instead of a prompt.
+  const IMPLEMENTED: ReadonlySet<string> = new Set([
+    "brief",
+    "foundation",
+    "gaps",
+    "followup",
+    "claims",
+  ]);
+  if (!IMPLEMENTED.has(state.step) && state.step !== "fetch") {
     return fail(
       2,
       runDir,
       state.step,
       [
         `E206: step ${state.step} is owned by ticket #${meta.ticket}; ` +
-          `it is not executable in ticket #11 yet`,
+          `it is not executable yet`,
       ],
       `Step ${state.step} is owned by ticket #${meta.ticket}; not executable yet.`,
     );

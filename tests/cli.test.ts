@@ -196,9 +196,28 @@ describe("prose pipeline", () => {
     run(["fulfill", "foundation", write("f.md", FOUNDATION)]);
     run(["fulfill", "gaps", write("g.md", GAPS)]);
     run(["fulfill", "followup", write("fo.md", FOLLOWUP)]);
-    const { code, env } = runJson(["next"]);
-    expect(code).toBe(2);
-    expect(env.errors.join("\n")).toContain("ticket #12");
+    // claims is implemented in ticket #12: next names it with its prompt.
+    const claims = runJson(["next"]);
+    expect(claims.code).toBe(0);
+    expect(claims.env.step).toBe("claims");
+    // Walk claims with a loopback-only citation; the fetch step then
+    // executes, records the SSRF refusal as unreachable, and advances.
+    const claimsJson = JSON.stringify([
+      {
+        id: "c001",
+        statement: "A factual statement.",
+        citations: [{ url: "http://127.0.0.1/x", locator: "p1", title: "T" }],
+        tier: 3,
+      },
+    ]);
+    expect(run(["fulfill", "claims", write("claims.json", claimsJson)]).code).toBe(0);
+    const fetched = runJson(["next"]);
+    expect(fetched.code).toBe(0);
+    expect(fetched.env.step).toBe("verdicts");
+    // verdicts onward is future work (ticket #13).
+    const future = runJson(["next"]);
+    expect(future.code).toBe(2);
+    expect(future.env.errors.join("\n")).toContain("ticket #13");
   });
 });
 
