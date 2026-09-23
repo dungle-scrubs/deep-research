@@ -229,10 +229,57 @@ describe("prose pipeline", () => {
     // matrix.json exists with derived statuses.
     const matrix = JSON.parse(fs.readFileSync(path.join(runDir, "state", "matrix.json"), "utf8"));
     expect(matrix.claims[0].status).toBe("unreachable");
-    // briefing onward is future work (ticket #14).
-    const future = runJson(["next"]);
-    expect(future.code).toBe(2);
-    expect(future.env.errors.join("\n")).toContain("ticket #14");
+    // Full walk to done (ticket #14): briefing, synthesis, finalize.
+    const briefing = "# Briefing\n\n## Coverage\n\nunreachable: 1\n";
+    const briefed = runJson(["fulfill", "briefing", write("briefing.md", briefing)]);
+    expect(briefed.code).toBe(0);
+    expect(briefed.env.step).toBe("synthesis");
+    // Briefing coverage mismatch is rejected.
+    const badBriefing = "# Briefing\n\n## Coverage\n\nverified: 5\n";
+    expect(runJson(["fulfill", "briefing", write("bad.md", badBriefing)]).code).toBe(2);
+    const report = [
+      "# Report",
+      "",
+      "## Question",
+      "What?",
+      "",
+      "## Verified findings",
+      "None.",
+      "",
+      "## Single-source findings",
+      "None.",
+      "",
+      "## Conflicts",
+      "None.",
+      "",
+      "## Gaps and uncertainty",
+      "The only citation was unreachable.",
+      "",
+      "## Practical implications",
+      "None yet.",
+      "",
+      "## Evidence table",
+      "",
+      "| Claim | Citation | Status |",
+      "| --- | --- | --- |",
+      "| c001 | http://127.0.0.1/x | unreachable (source-not-checked) |",
+      "",
+      "## Discarded claims",
+      "None.",
+    ].join("\n");
+    const synthesized = runJson(["fulfill", "synthesis", write("report.md", report)]);
+    expect(synthesized.code).toBe(0);
+    expect(synthesized.env.step).toBe("finalize");
+    const done = runJson(["next"]);
+    expect(done.code).toBe(0);
+    expect(done.env.step).toBe("done");
+    expect(fs.existsSync(path.join(runDir, "sources.md"))).toBe(true);
+    expect(runJson(["next"]).code).toBe(3);
+    expect(runJson(["status"]).env.data?.current).toBe("done");
+    // A closed run can be read but not advanced.
+    const closed = runJson(["fulfill", "briefing", write("again.md", briefing)]);
+    expect(closed.code).toBe(2);
+    expect(closed.env.errors.join("\n")).toContain("E201");
   });
 });
 

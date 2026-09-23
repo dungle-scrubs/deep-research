@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { type ClaimsFile, parseClaims } from "../claims.js";
 import { fail, type HandlerResult, ok } from "../envelope.js";
 import { renderFollowupWithQuestions } from "../prompts.js";
+import { checkBriefingCoverage, readMatrixFile } from "../report.js";
 import { type RunState, readState, writeState } from "../state.js";
 import { nextStep, STEPS, type StepName } from "../steps.js";
 import { extractGapsQuestions, type ProseStep, readTextFile, validateProse } from "../validate.js";
@@ -53,7 +54,13 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
       `Step ${step} is not takeable now. The takeable step is ${state.step}.`,
     );
   }
-  if (step !== "claims" && step !== "verdicts" && !isProseStep(step)) {
+  if (
+    step !== "claims" &&
+    step !== "verdicts" &&
+    step !== "briefing" &&
+    step !== "synthesis" &&
+    !isProseStep(step)
+  ) {
     const scopeMeta = STEPS[step];
     return fail(
       2,
@@ -102,6 +109,22 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
       const { issues: verdictIssues } = validateVerdicts(text, claims);
       violations = verdictIssues.map((issue) => `E205: verdicts: ${issue.path}: ${issue.message}`);
     }
+  } else if (step === "briefing") {
+    violations = validateProse("brief", text).map(
+      (v) => `E205: briefing: ${v.replace(/^brief: /, "")}`,
+    );
+    try {
+      const matrix = readMatrixFile(runDir);
+      violations = [...violations, ...checkBriefingCoverage(text, matrix).map((v) => `E205: ${v}`)];
+    } catch (error) {
+      return fail(4, runDir, step, [
+        `E401: cannot read state/matrix.json for the coverage check: ${errorMessage(error)}`,
+      ]);
+    }
+  } else if (step === "synthesis") {
+    violations = validateProse("brief", text).map(
+      (v) => `E205: synthesis: ${v.replace(/^brief: /, "")}`,
+    );
   } else {
     violations = validateProse(step, text).map((v) => `E205: ${v}`);
   }

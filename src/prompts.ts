@@ -7,10 +7,12 @@ export const QUESTIONS_SLOT = "{{QUESTIONS}}";
 
 const STEPS_WITH_TOPIC = [
   "brief",
+  "briefing",
   "extraction",
   "foundation",
   "followup",
   "gaps",
+  "synthesis",
   "verdict",
 ] as const;
 export type TemplateStep = (typeof STEPS_WITH_TOPIC)[number];
@@ -30,10 +32,12 @@ export function substituteQuestions(template: string, questions: readonly string
 export function renderAllPrompts(topic: string): Record<TemplateStep, string> {
   return {
     brief: substituteTopic(readTemplate("brief"), topic),
+    briefing: substituteTopic(readTemplate("briefing"), topic),
     extraction: substituteTopic(readTemplate("extraction"), topic),
     foundation: substituteTopic(readTemplate("foundation"), topic),
     followup: substituteTopic(readTemplate("followup"), topic),
     gaps: substituteTopic(readTemplate("gaps"), topic),
+    synthesis: substituteTopic(readTemplate("synthesis"), topic),
     verdict: substituteTopic(readTemplate("verdict"), topic),
   };
 }

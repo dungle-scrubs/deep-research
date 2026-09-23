@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { cmdFetch, cmdRetryFetch } from "./commands/fetch.js";
+import { cmdFinalize } from "./commands/finalize.js";
 import { cmdFulfill } from "./commands/fulfill.js";
 import { cmdHelp } from "./commands/help.js";
 import { cmdNext } from "./commands/next.js";
@@ -7,7 +8,7 @@ import { cmdNew, locateRun, noRunFound, readStepArg } from "./commands/shared.js
 import { cmdStatus } from "./commands/status.js";
 import type { HandlerResult } from "./envelope.js";
 import { resolveRoot } from "./run.js";
-import { type RunState, readState } from "./state.js";
+import { readState } from "./state.js";
 
 function emit(result: HandlerResult, asJson: boolean): void {
   if (asJson) {
@@ -51,10 +52,10 @@ export function buildProgram(): Command {
         emit(noRunFound(root), opts.json === true);
         return;
       }
-      // CLI steps execute when takeable; the fetch step runs here.
-      let state: RunState;
+      // CLI steps execute when takeable; fetch and finalize run here.
+      let step: string;
       try {
-        state = readState(runDir);
+        step = readState(runDir).step;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         emit(
@@ -72,8 +73,12 @@ export function buildProgram(): Command {
         );
         return;
       }
-      if (state.step === "fetch") {
+      if (step === "fetch") {
         emit(await cmdFetch(runDir), opts.json === true);
+        return;
+      }
+      if (step === "finalize") {
+        emit(cmdFinalize(runDir), opts.json === true);
         return;
       }
       emit(cmdNext(runDir), opts.json === true);

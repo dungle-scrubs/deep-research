@@ -28,18 +28,20 @@ export function cmdNext(runDir: string): HandlerResult {
     );
   }
   const meta = STEPS[state.step];
-  // Caller steps implemented so far (tickets #11 and #12). The fetch CLI
-  // step never reaches this branch: dr next executes it directly. Later
-  // steps are named with their owning ticket instead of a prompt.
+  // Caller steps implemented so far (tickets #11-#14). The CLI steps
+  // (fetch, finalize) never reach this branch: dr next executes them
+  // directly in src/cli.ts.
   const IMPLEMENTED: ReadonlySet<string> = new Set([
     "brief",
+    "briefing",
     "claims",
     "foundation",
     "followup",
     "gaps",
+    "synthesis",
     "verdicts",
   ]);
-  if (!IMPLEMENTED.has(state.step) && state.step !== "fetch") {
+  if (!IMPLEMENTED.has(state.step) && state.step !== "fetch" && state.step !== "finalize") {
     return fail(
       2,
       runDir,
