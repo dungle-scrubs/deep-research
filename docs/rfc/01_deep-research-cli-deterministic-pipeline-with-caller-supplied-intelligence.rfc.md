@@ -2,7 +2,7 @@
 number: "01"
 title: "deep-research CLI: deterministic pipeline with caller-supplied intelligence"
 type: feature
-status: Draft
+status: Accepted
 author: kevin
 date: "2026-02-24"
 ---
