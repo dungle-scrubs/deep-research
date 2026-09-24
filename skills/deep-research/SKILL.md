@@ -1,6 +1,6 @@
 ---
 name: deep-research
-description: Drive `dr`, the deterministic deep-research pipeline CLI, through a research run: create the run, take each step the CLI names, supply the intelligence (searching, judging, writing) with a model chosen per step, and let the CLI validate, fetch sources, derive statuses, and gate progression. Use when the user asks for deep research, a researched report with verified citations, or mentions `dr`.
+description: "Drive `dr`, the deterministic deep-research pipeline CLI, through a research run - create the run, take each step the CLI names, supply the intelligence (searching, judging, writing) with a model chosen per step, and let the CLI validate, fetch sources, derive statuses, and gate progression. Use when the user asks for deep research, a researched report with verified citations, or mentions `dr`."
 ---
 
 # deep-research (dr)
