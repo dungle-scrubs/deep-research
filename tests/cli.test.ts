@@ -348,13 +348,13 @@ describe("envelope and help", () => {
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
-    const statusStart = lines.find((l) => l["cmd"] === "status" && l["event"] === "start");
-    const statusEnd = lines.find((l) => l["cmd"] === "status" && l["event"] === "end");
+    const statusStart = lines.find((l) => l.cmd === "status" && l.event === "start");
+    const statusEnd = lines.find((l) => l.cmd === "status" && l.event === "end");
     expect(statusStart).toBeDefined();
     expect(statusEnd).toBeDefined();
-    expect(statusEnd?.["exitCode"]).toBe(0);
-    expect(statusEnd?.["ok"]).toBe(true);
-    expect(statusStart?.["pid"]).toBe(statusEnd?.["pid"]);
+    expect(statusEnd?.exitCode).toBe(0);
+    expect(statusEnd?.ok).toBe(true);
+    expect(statusStart?.pid).toBe(statusEnd?.pid);
   });
 
   it("emits an E106 envelope for commander argument errors", () => {

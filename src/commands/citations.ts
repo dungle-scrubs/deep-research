@@ -1,4 +1,4 @@
-import { CitationsUnavailableError, renderCitations, type CitationsExport } from "../citations.js";
+import { type CitationsExport, CitationsUnavailableError, renderCitations } from "../citations.js";
 import { fail, type HandlerResult, ok } from "../envelope.js";
 import { loadStateOrFail } from "./shared.js";
 

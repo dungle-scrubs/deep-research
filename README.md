@@ -1,10 +1,14 @@
 # deep-research
 
-`dr` - a deterministic deep-research pipeline CLI. The caller (a human or
-agent session) supplies the intelligence - searching, judging, writing -
-with whatever model it chooses per step. The CLI holds state, validates
-structure, fetches cited sources, derives claim statuses, and gates
-progression. The CLI never calls a model.
+`dr` is a deterministic deep-research pipeline CLI: it turns one research
+question into a verified, citation-traced report. Hosted deep-research
+tools search well and validate poorly - citations nobody checked against
+the pages they name. `dr` inverts that: the caller (a human or an agent
+session) supplies the intelligence - searching, judging, writing - with
+whatever model it chooses per step, and the CLI holds state, fetches
+every cited URL itself, derives claim statuses by fixed rules, and
+refuses to advance on anything it cannot check. Every claim in the final
+report carries a status traceable to fetched evidence on disk.
 
 Spec: `docs/rfc/01_deep-research-cli-deterministic-pipeline-with-caller-supplied-intelligence.rfc.md`.
 Tracker: GitHub issues on `dungle-scrubs/deep-research` (private).
@@ -71,3 +75,7 @@ refusal, unreachable derivation, report gate) to done. Exits green.
 Tickets #11-#14 are implemented and closed: prose pipeline, claims schema
 and fetcher, verdicts and derivation, briefing/synthesis/finalize. This
 ticket (#15) adds the skill, README, and smoke recipe.
+
+## License
+
+MIT - see [LICENSE](LICENSE).
