@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { parseClaims } from "../claims.js";
 import { fail, type HandlerResult, ok } from "../envelope.js";
-import { fetchAll, type LedgerEntry, readLedger } from "../fetch.js";
+import type { FetchTier, LedgerEntry } from "../fetch.js";
+import { fetchAll, readLedger } from "../fetch.js";
 import { runLayout } from "../rundir.js";
 import { STEPS } from "../steps.js";
 import { countBy, errorMessage } from "../util.js";
@@ -14,6 +15,16 @@ function citedUrls(runDir: string): string[] {
     throw new Error(`claims.json no longer validates: ${issues.map((i) => i.message).join("; ")}`);
   }
   return claims.flatMap((claim) => claim.citations.map((citation) => citation.url));
+}
+
+/** One invocation's selection, never persisted as run configuration. */
+function fetchTier(fallback: FetchTier): FetchTier | null {
+  const value = process.env.DR_FETCH_TIER ?? fallback;
+  return value === "plain" || value === "scraper" ? value : null;
+}
+
+function invalidTier(runDir: string, step: Parameters<typeof fail>[2]): HandlerResult {
+  return fail(1, runDir, step, ["E106: DR_FETCH_TIER must be plain or scraper"]);
 }
 
 function summarize(entries: readonly LedgerEntry[]): string {
@@ -36,9 +47,11 @@ export async function cmdFetch(runDir: string): Promise<HandlerResult> {
   } catch (error) {
     return fail(4, runDir, "fetch", [`E401: ${errorMessage(error)}`]);
   }
+  const tier = fetchTier("plain");
+  if (tier === null) return invalidTier(runDir, state.step);
   let entries: readonly LedgerEntry[];
   try {
-    entries = await fetchAll({ runDir, urls });
+    entries = await fetchAll({ runDir, tier, urls });
   } catch (error) {
     return fail(4, runDir, "fetch", [`E401: fetch failed: ${errorMessage(error)}`]);
   }
@@ -62,7 +75,7 @@ export async function cmdFetch(runDir: string): Promise<HandlerResult> {
   });
 }
 
-/** dr retry-fetch: re-attempt unreachable URLs idempotently; keep ok pages. */
+/** dr retry-fetch: re-attempt non-ok URLs via scraper; keep ok pages. */
 export async function cmdRetryFetch(runDir: string): Promise<HandlerResult> {
   const loaded = loadStateOrFail(runDir, null);
   if ("result" in loaded) return loaded.result;
@@ -91,10 +104,14 @@ export async function cmdRetryFetch(runDir: string): Promise<HandlerResult> {
   } catch (error) {
     return fail(4, runDir, state.step, [`E401: ${errorMessage(error)}`]);
   }
-  const priorNormalized = new Set(readLedger(runDir).map((entry) => entry.normalized));
+  const tier = fetchTier("scraper");
+  if (tier === null) return invalidTier(runDir, state.step);
+  const priorAttempts = new Map(
+    readLedger(runDir).map((entry) => [entry.normalized, entry.attempts]),
+  );
   let entries: readonly LedgerEntry[];
   try {
-    entries = await fetchAll({ retryOnly: true, runDir, urls });
+    entries = await fetchAll({ retryOnly: true, runDir, tier, urls });
   } catch (error) {
     return fail(4, runDir, state.step, [`E401: retry-fetch failed: ${errorMessage(error)}`]);
   }
@@ -102,6 +119,6 @@ export async function cmdRetryFetch(runDir: string): Promise<HandlerResult> {
   const human = `Retry-fetch complete: ${counts}\nLedger: ${runLayout(runDir).ledgerFile}`;
   return ok(runDir, state.step, human, {
     counts,
-    entries: entries.filter((entry) => !priorNormalized.has(entry.normalized)),
+    entries: entries.filter((entry) => priorAttempts.get(entry.normalized) !== entry.attempts),
   });
 }

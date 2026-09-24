@@ -77,14 +77,19 @@ export const STEPS: Record<StepName, StepMeta> = {
   },
   fetch: {
     goodOutput:
-      "Every cited URL fetched once into fetched/ with a ledger row " +
-      "(outcome, final URL, content type, timestamp).",
+      "Every cited URL recorded in fetched/ and the ledger " +
+      "(outcome, fetch tier, attempts, final URL when known, content type, timestamp).",
     kind: "cli",
     modelQuery: null,
     name: "fetch",
     output: "fetched/",
     plainLine: "Automatic: the CLI downloads every cited page. No model involved.",
-    summary: "Fetch every unique cited URL once as durable run evidence.",
+    summary:
+      "Fetch each unique cited URL as durable evidence. Plain first; scraper fallback on 403 or empty text. " +
+      "DR_FETCH_TIER=scraper selects scraper directly for this invocation; DR_FETCH_TIER=plain selects plain first. " +
+      "dr retry-fetch defaults to scraper for non-ok URLs and keeps ok pages. " +
+      "Optional dependency: pipx install dungle-scrubs-scraper. " +
+      "Both tiers use the SSRF guard, robots rules, per-origin pacing, and byte cap. Scraper text remains untrusted.",
     template: null,
   },
   finalize: {

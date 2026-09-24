@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import type { ClaimsFile } from "./claims.js";
 import { parseClaims } from "./claims.js";
-import { type LedgerEntry, readLedger } from "./fetch.js";
+import type { FetchTier, LedgerEntry } from "./fetch.js";
+import { readLedger } from "./fetch.js";
 import { readMatrixFile } from "./report.js";
 import { runLayout } from "./rundir.js";
 import { readState } from "./state.js";
@@ -20,6 +21,7 @@ export interface CitedBy {
 }
 
 export interface FetchInfo {
+  readonly tier: FetchTier | null;
   readonly status: string;
   readonly finalUrl: string | null;
   readonly contentType: string | null;
@@ -36,6 +38,7 @@ export interface CitationDocument {
 }
 
 export interface UnfetchedDocument {
+  readonly tier: FetchTier | null;
   readonly url: string;
   readonly reason: string;
   readonly citedBy: readonly { claimId: string; claimStatus: string }[];
@@ -123,6 +126,7 @@ export function renderCitations(runDir: string, generatedAt: string): CitationsE
               fetchedAt: ledgerEntry?.fetchedAt ?? "",
               finalUrl: ledgerEntry?.finalUrl ?? null,
               status: ledgerEntry?.status ?? "not-fetched",
+              tier: ledgerEntry?.tier ?? null,
             },
             normalized: row.normalized,
             tiers: [claimById.get(matrixClaim.id)?.tier ?? 0],
@@ -139,6 +143,7 @@ export function renderCitations(runDir: string, generatedAt: string): CitationsE
           unfetchedGroups.set(row.document, {
             citedBy: [entry],
             reason: row.ledgerStatus ?? "not-fetched",
+            tier: ledger.get(row.normalized)?.tier ?? null,
             url: row.url,
           });
         }
