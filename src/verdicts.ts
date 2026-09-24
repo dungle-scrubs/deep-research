@@ -178,11 +178,19 @@ function containsQuote(page: string, quote: string): boolean {
   return false;
 }
 
-function quoteIssues(entries: readonly VerdictEntry[], runDir: string): VerdictIssue[] {
+/** Check one batch for quote grounding. historicalBatch is null for the
+ *  incoming batch (plain index paths) and the 1-based batch number when
+ *  rechecking an accepted batch after a ledger change. Each hit carries its
+ *  entry so callers can match history against resubmissions without parsing. */
+function quoteIssues(
+  entries: readonly VerdictEntry[],
+  runDir: string,
+  historicalBatch: number | null,
+): { readonly entry: VerdictEntry; readonly issue: VerdictIssue }[] {
   const ledger = new Map(readLedger(runDir).map((entry) => [entry.normalized, entry]));
   // Many claims can cite one page. Normalize and read each document only once.
   const pages = new Map<string, string | null>();
-  const issues: VerdictIssue[] = [];
+  const issues: { readonly entry: VerdictEntry; readonly issue: VerdictIssue }[] = [];
   entries.forEach((entry, index) => {
     if ("conflict" in entry || entry.verdict !== "supported") return;
     const normalized = normalizeUrl(entry.url);
@@ -190,8 +198,14 @@ function quoteIssues(entries: readonly VerdictEntry[], runDir: string): VerdictI
     if (skipsQuoteCheck(fetched?.status ?? null)) return;
     const reject = (message: string): void => {
       issues.push({
-        message: `${entry.claimId} on ${entry.url}: ${message}`,
-        path: `${index}.quote`,
+        entry,
+        issue: {
+          message: `${entry.claimId} on ${entry.url}: ${message}`,
+          path:
+            historicalBatch === null
+              ? `${index}.quote`
+              : `batch ${historicalBatch}[${index}].quote`,
+        },
       });
     };
     if (entry.quote === undefined) {
@@ -265,12 +279,25 @@ export function validateVerdicts(
   const batchIndex = batches.length + 1;
   const seenPairs = new Map<string, number>();
   const conflictsFor = new Map<string, number>();
+  // A pair whose latest accepted entry fails the live ledger check is stale:
+  // retry-fetch made its document checkable after acceptance. Only a stale
+  // pair can be re-fulfilled; the new entry supersedes for derivation.
+  // Staleness is per pair: one stale pair does not reopen its batch mates.
+  const latestAccepted = new Map<string, VerdictEntry>();
   batches.forEach((batch, index) => {
     for (const entry of batch) {
       if ("conflict" in entry) conflictsFor.set(entry.claimId, index + 1);
-      else seenPairs.set(pairKey(entry.claimId, entry.url), index + 1);
+      else {
+        const key = pairKey(entry.claimId, entry.url);
+        seenPairs.set(key, index + 1);
+        latestAccepted.set(key, entry);
+      }
     }
   });
+  const stalePairs = new Set<string>();
+  for (const [key, entry] of latestAccepted) {
+    if (quoteIssues([entry], runDir, null).length > 0) stalePairs.add(key);
+  }
   entries.forEach((entry, index) => {
     const knownCitations = citationsByClaim.get(entry.claimId);
     if (knownCitations === undefined) {
@@ -298,17 +325,44 @@ export function validateVerdicts(
     }
     const key = pairKey(entry.claimId, normalized);
     const previous = seenPairs.get(key);
-    if (previous !== undefined) {
+    if (previous !== undefined && !stalePairs.has(key)) {
       issues.push({
         message: `batch ${batchIndex}: duplicate verdict for ${entry.claimId} on ${entry.url}; first supplied in batch ${previous}`,
         path: `${index}`,
       });
     } else {
       seenPairs.set(key, batchIndex);
+      stalePairs.delete(key);
     }
   });
   // Invalid claim/citation pairs are fixed before grounding their evidence.
-  if (issues.length === 0) issues.push(...quoteIssues(entries, runDir));
+  // The aggregate is rechecked every batch: retry-fetch can flip a ledger
+  // status between batches, and a quoteless supported entry accepted while
+  // exempt must not count once its document is checkable. Historical
+  // violations carry their batch index so the caller knows which pair to fix.
+  if (issues.length === 0) {
+    issues.push(...quoteIssues(entries, runDir, null).map((issue) => issue.issue));
+    // Pairs resubmitted in this batch carry their own fix; history blocks
+    // only the stale pairs the batch leaves unaddressed.
+    const resubmitted = new Set<string>();
+    for (const entry of entries) {
+      if (!("conflict" in entry)) resubmitted.add(pairKey(entry.claimId, entry.url));
+    }
+    batches.forEach((prior, batch) => {
+      for (const stale of quoteIssues(prior, runDir, batch + 1)) {
+        if (
+          !("conflict" in stale.entry) &&
+          resubmitted.has(pairKey(stale.entry.claimId, stale.entry.url))
+        ) {
+          continue;
+        }
+        issues.push({
+          message: `${stale.issue.message} (retry-fetch changed the ledger; re-fulfill the pair with a quote)`,
+          path: stale.issue.path,
+        });
+      }
+    });
+  }
   return { entries, issues };
 }
 
