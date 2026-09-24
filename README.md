@@ -61,6 +61,43 @@ Runs live in `YYYY-MM-DD-slug/` under the cwd, `--root <dir>`, or
 `{ok, run, step, errors[]}`). Exits: 0 ok, 1 usage, 2 gate/validation,
 3 nothing takeable, 4 internal.
 
+## Scraper fetch tier
+
+Plain fetch is the default. HTTP 403 and pages with no extracted text fall
+back to the optional scraper package. Install its CLI on PATH:
+
+```sh
+pipx install dungle-scrubs-scraper
+```
+
+The package uses local Crawl4AI/Chromium. Follow its setup instructions if
+it reports a missing browser. `dr` disables its Jina fallback and makes no
+model calls. Missing dependencies and scraper failures become ledger
+outcomes, not run failures.
+
+To use scraper directly for the fetch step, or retry failed sources:
+
+```sh
+DR_FETCH_TIER=scraper dr next
+dr retry-fetch
+```
+
+The selection lasts for that invocation; there is no config file.
+`DR_FETCH_TIER=plain` selects plain first, including on `retry-fetch`.
+Retries keep `ok` entries unchanged and attempt each non-ok URL through
+scraper by default. SSRF checks, robots rules, per-origin document pacing,
+the 15-second attempt deadline, and the 5 MiB stored-document cap apply to
+both tiers. Scraper's own SSRF checks also cover browser requests.
+
+The ledger records `tier: plain | scraper` alongside the existing status.
+Each tier attempt increments `attempts`; plain plus fallback counts as two.
+Older ledger rows without a tier read as `plain`. Scraper stores its
+markdown in both `.raw` and `.txt`; that content is untrusted page evidence.
+Its `finalUrl` is null because the scraper CLI does not report the final
+redirect URL. Citation exports include `documents[].fetch.tier` and
+`unfetched[].tier` (null when no ledger row exists). These fetch tiers are
+separate from the numeric evidence tiers on claims.
+
 ## Smoke
 
 ```sh

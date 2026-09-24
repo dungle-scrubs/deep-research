@@ -37,6 +37,7 @@ function ledgerEntry(url: string, status: FetchStatus): LedgerEntry {
     normalized: url,
     reason: null,
     status,
+    tier: "plain",
     url,
   };
 }
