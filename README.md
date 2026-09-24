@@ -11,7 +11,7 @@ refuses to advance on anything it cannot check. Every claim in the final
 report carries a status traceable to fetched evidence on disk.
 
 Spec: `docs/rfc/01_deep-research-cli-deterministic-pipeline-with-caller-supplied-intelligence.rfc.md`.
-Tracker: GitHub issues on `dungle-scrubs/deep-research` (private).
+Tracker: GitHub issues on `dungle-scrubs/deep-research`.
 
 ## Inspiration
 
