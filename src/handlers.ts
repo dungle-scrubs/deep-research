@@ -5,15 +5,14 @@ import { checkBriefingCoverage, readMatrixFile } from "./report.js";
 import { runLayout } from "./rundir.js";
 import type { RunState } from "./state.js";
 import type { StepName } from "./steps.js";
-import { countBy, errorMessage } from "./util.js";
+import { errorMessage } from "./util.js";
 import { extractGapsQuestions, validateProse } from "./validate.js";
-import { deriveMatrix, validateVerdicts } from "./verdicts.js";
 
 /** Per-step fulfillment handlers. Each caller step owns its validation and
  *  its post-write effects here; cmdFulfill is lookup, write, advance.
  *
- *  A step without a handler is a CLI step (fetch, finalize) - fulfilled by
- *  dr next, not by a file. */
+ *  Verdict batches have a dedicated fulfillment command because they can
+ *  keep the step open. Fetch and finalize execute through dr next. */
 
 export interface StepContext {
   readonly runDir: string;
@@ -87,41 +86,6 @@ const claimsHandler: StepHandler = {
   },
 };
 
-const verdictsHandler: StepHandler = {
-  failureWord: "verdicts saved but derivation failed",
-  validate(context) {
-    const claimsRaw = fs.readFileSync(runLayout(context.runDir).step("claims.json"), "utf8");
-    const { claims, issues } = parseClaims(claimsRaw);
-    if (!claims) {
-      return [
-        `E205: verdicts: steps/claims.json no longer validates: ${issues
-          .map((issue) => issue.message)
-          .join("; ")}`,
-      ];
-    }
-    const { issues: verdictIssues } = validateVerdicts(context.text, claims, context.runDir);
-    return verdictIssues.map((issue) => `E205: verdicts: ${issue.path}: ${issue.message}`);
-  },
-  onComplete(context) {
-    const layout = runLayout(context.runDir);
-    const claimsRaw = fs.readFileSync(layout.step("claims.json"), "utf8");
-    const { claims } = parseClaims(claimsRaw);
-    if (!claims) throw new Error("steps/claims.json no longer validates");
-    const { entries } = validateVerdicts(context.text, claims, context.runDir);
-    const matrix = deriveMatrix(claims, entries, context.runDir, new Date().toISOString());
-    fs.mkdirSync(layout.stateDir, { recursive: true });
-    fs.writeFileSync(layout.matrixFile, `${JSON.stringify(matrix, null, 2)}\n`, "utf8");
-    // The RFC rule: derivation never rewrites steps/claims.json.
-    if (fs.readFileSync(layout.step("claims.json"), "utf8") !== claimsRaw) {
-      throw new Error("derivation would rewrite steps/claims.json; matrix discarded");
-    }
-    const summary = [...countBy(matrix.claims, (claim) => claim.status)]
-      .map(([status, n]) => `${status}: ${n}`)
-      .join(", ");
-    return { summary };
-  },
-};
-
 const briefingHandler: StepHandler = {
   validate(context) {
     const violations = proseValidator("briefing")(context);
@@ -142,7 +106,6 @@ export const STEP_HANDLERS: Readonly<Partial<Record<StepName, StepHandler>>> = {
   followup: followupHandler,
   gaps: gapsHandler,
   synthesis: synthesisHandler,
-  verdicts: verdictsHandler,
 };
 
 /** Wrap handler onComplete failures with the handler's E401 wording. */

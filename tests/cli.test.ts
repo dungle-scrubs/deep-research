@@ -400,7 +400,10 @@ describe("verdict quote gate", () => {
     expect(accepted.env.ok).toBe(true);
     expect(accepted.env.step).toBe("briefing");
     expect(fs.readFileSync(layout.step("claims.json"), "utf8")).toBe(claimsBefore);
-    expect(JSON.parse(fs.readFileSync(layout.step("verdicts.json"), "utf8"))).toEqual(fixed);
+    // The aggregate stores validated entries, including schema defaults.
+    expect(JSON.parse(fs.readFileSync(layout.step("verdicts.json"), "utf8"))).toEqual(
+      fixed.map((entry) => ({ ...entry, note: "" })),
+    );
     const matrix = JSON.parse(fs.readFileSync(layout.matrixFile, "utf8"));
     expect(matrix.coverage).toEqual({ tier3: { "single-source": 2, unreachable: 4 } });
     const cited = runJson(["citations"]);
