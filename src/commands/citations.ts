@@ -1,4 +1,4 @@
-import { CitationsUnavailableError, renderCitations } from "../citations.js";
+import { CitationsUnavailableError, renderCitations, type CitationsExport } from "../citations.js";
 import { fail, type HandlerResult, ok } from "../envelope.js";
 import { loadStateOrFail } from "./shared.js";
 
@@ -20,7 +20,7 @@ export async function cmdCitations(
       `Unknown format: ${format}. Supported: json.`,
     );
   }
-  let export_;
+  let export_: CitationsExport;
   try {
     export_ = renderCitations(runDir, new Date().toISOString());
   } catch (error) {
