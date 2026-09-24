@@ -9,6 +9,17 @@ progression. The CLI never calls a model.
 Spec: `docs/rfc/01_deep-research-cli-deterministic-pipeline-with-caller-supplied-intelligence.rfc.md`.
 Tracker: GitHub issues on `dungle-scrubs/deep-research` (private).
 
+## Inspiration
+
+The pipeline design borrows from Tom's Yudame research process
+([workflow](https://github.com/yudame/research/blob/main/.claude/skills/new-podcast-episode.md),
+[methodology](https://research.yuda.me/methodology.html)): two-pass retrieval
+with gap analysis between, a cross-validation matrix, gates between stages,
+and methodology baked into prompts. `dr` makes that machinery deterministic
+and fixes its known weakness - matrix entries compared tool outputs instead
+of underlying sources - by fetching every cited URL and deriving claim
+statuses from caller verdicts against the fetched text.
+
 ## Install (dev)
 
 Node via mise. No npm publish in v1.

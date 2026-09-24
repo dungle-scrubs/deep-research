@@ -8,6 +8,7 @@ import { normalizeUrl, urlHash } from "./url.js";
 
 export const MAX_BYTES = 5 * 1024 * 1024;
 export const TIMEOUT_MS = 15_000;
+export const MAX_PARALLEL_ORIGINS = 6;
 
 export type FetchStatus =
   | "ok"
@@ -182,7 +183,7 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
   const clock: PerDomainClock = { lastHit: new Map() };
   const results: LedgerEntry[] = [];
 
-  for (const normalized of targets) {
+  const processTarget = async (normalized: string): Promise<LedgerEntry> => {
     const prior = byNormalized.get(normalized);
     const attempts = (prior?.attempts ?? 0) + 1;
     const target = new URL(normalized);
@@ -200,15 +201,14 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
       guardCache.set(target.origin, verdict);
     }
     if (!verdict.allowed) {
-      results.push({
+      return {
         ...base,
         bytes: 0,
         contentType: null,
         finalUrl: null,
         reason: `SSRF guard: ${verdict.reason}`,
         status: "unreachable",
-      });
-      continue;
+      };
     }
 
     const origin = target.origin;
@@ -220,15 +220,14 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
     }
     const pathname = target.pathname;
     if (disallowList.some((rule) => pathname.startsWith(rule))) {
-      results.push({
+      return {
         ...base,
         bytes: 0,
         contentType: null,
         finalUrl: null,
         reason: "robots.txt disallow",
         status: "robots-blocked",
-      });
-      continue;
+      };
     }
 
     await respectRateLimit(origin, clock, sleep, now);
@@ -242,26 +241,24 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
       if (response.status === 401 || response.status === 402) {
         const body = Buffer.from(await response.arrayBuffer());
         writeDoc(fetchedDir, base.hash, body, null);
-        results.push({
+        return {
           ...base,
           bytes: body.byteLength,
           contentType,
           finalUrl: response.url || null,
           reason: `HTTP ${response.status}`,
           status: "paywalled",
-        });
-        continue;
+        };
       }
       if (!response.ok) {
-        results.push({
+        return {
           ...base,
           bytes: 0,
           contentType,
           finalUrl: response.url || null,
           reason: `HTTP ${response.status}`,
           status: "unreachable",
-        });
-        continue;
+        };
       }
       const buffer = await readCapped(response, options.maxBytes ?? MAX_BYTES);
       const isPdf = (contentType ?? "").toLowerCase().includes("application/pdf");
@@ -270,38 +267,71 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
         const rawPath = path.join(fetchedDir, `${base.hash}.raw`);
         const text = await pdfText(rawPath);
         if (text === null) {
-          results.push({
+          return {
             ...base,
             bytes: buffer.byteLength,
             contentType,
             finalUrl: response.url || null,
             reason: "PDF stored; no text extraction available",
             status: "binary-unreadable",
-          });
-          continue;
+          };
         }
         fs.writeFileSync(path.join(fetchedDir, `${base.hash}.txt`), text, "utf8");
       }
-      results.push({
+      return {
         ...base,
         bytes: buffer.byteLength,
         contentType,
         finalUrl: response.url || null,
         reason: null,
         status: "ok",
-      });
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      results.push({
+      return {
         ...base,
         bytes: 0,
         contentType: null,
         finalUrl: null,
         reason: message,
         status: "unreachable",
-      });
+      };
     }
+  };
+
+  // Cross-origin concurrency: each origin's URLs run in one sequential
+  // queue (preserving the per-domain 1 req/s spacing); up to
+  // MAX_PARALLEL_ORIGINS queues run at once. Same-origin URLs never
+  // interleave across workers, so the rate limit holds without locks.
+  const queuesByOrigin = new Map<string, string[]>();
+  for (const normalized of targets) {
+    const origin = new URL(normalized).origin;
+    const queue = queuesByOrigin.get(origin) ?? [];
+    queue.push(normalized);
+    queuesByOrigin.set(origin, queue);
   }
+  const queues = [...queuesByOrigin.values()];
+  let nextQueue = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = nextQueue;
+      nextQueue += 1;
+      if (index >= queues.length) return;
+      const queue = queues[index];
+      if (!queue) continue;
+      for (const normalized of queue) {
+        results.push(await processTarget(normalized));
+      }
+    }
+  };
+  const workerCount = Math.min(MAX_PARALLEL_ORIGINS, queues.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  // Deterministic ledger order regardless of completion order.
+  const targetIndex = new Map(targets.map((normalized, index) => [normalized, index]));
+  results.sort(
+    (a, b) => (targetIndex.get(a.normalized) ?? 0) - (targetIndex.get(b.normalized) ?? 0),
+  );
 
   // Merge: new results replace prior entries for the same normalized URL;
   // untouched prior entries (retry mode keeps ok pages) survive.
