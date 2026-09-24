@@ -1,12 +1,32 @@
 {
-  "name": "deep-research",
+  "name": "@dungle-scrubs/deep-research",
   "version": "0.1.0",
-  "private": true,
   "description": "dr - deterministic deep-research pipeline CLI (caller-supplied intelligence, CLI-held validation)",
+  "license": "MIT",
+  "author": "Kevin Frilot <kevinfrilot@icloud.com>",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dungle-scrubs/deep-research.git"
+  },
+  "homepage": "https://github.com/dungle-scrubs/deep-research#readme",
+  "bugs": {
+    "url": "https://github.com/dungle-scrubs/deep-research/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "skills"
+  ],
   "bin": {
     "dr": "./dist/dr.mjs"
   },
+  "packageManager": "pnpm@11.9.0",
   "scripts": {
     "build": "tsdown && node scripts/embed.mjs",
     "typecheck": "tsc --noEmit",
@@ -15,7 +35,6 @@
     "pretest": "pnpm build",
     "smoke": "pnpm build && node scripts/smoke.mjs"
   },
-  "packageManager": "pnpm@11.9.0",
   "dependencies": {
     "commander": "15.0.0",
     "marked": "18.0.14",
