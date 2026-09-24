@@ -3,6 +3,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { FetchStatus } from "../src/fetch.js";
+import { extractText, readLedger, writeLedger } from "../src/fetch.js";
+import { runLayout } from "../src/rundir.js";
 
 const REPO = path.resolve(__dirname, "..");
 const DR = path.join(REPO, "dist", "dr.mjs");
@@ -301,6 +304,114 @@ describe("prose pipeline", () => {
     const closed = runJson(["fulfill", "briefing", write("again.md", briefing)]);
     expect(closed.code).toBe(2);
     expect(closed.env.errors.join("\n")).toContain("E201");
+  });
+});
+
+describe("verdict quote gate", () => {
+  it("lists failing entries, preserves state, and accepts a corrected fulfill", () => {
+    const created = runJson(["new", "Quote gate fixture"]);
+    expect(created.code).toBe(0);
+    const runDir = created.env.run;
+    if (!runDir) throw new Error("new did not return a run directory");
+    const layout = runLayout(runDir);
+    for (const [step, text] of [
+      ["brief", BRIEF],
+      ["foundation", FOUNDATION],
+      ["gaps", GAPS],
+      ["followup", FOLLOWUP],
+    ] as const) {
+      expect(runJson(["fulfill", step, write(`${step}.md`, text)]).code).toBe(0);
+    }
+    const statuses: readonly FetchStatus[] = [
+      "ok",
+      "ok",
+      "unreachable",
+      "robots-blocked",
+      "paywalled",
+      "binary-unreadable",
+    ];
+    const claims = statuses.map((_status, index) => ({
+      citations: [
+        { locator: "Table 2 (unchecked)", title: "Fixture", url: `http://127.0.0.1/${index}` },
+      ],
+      id: `c00${index + 1}`,
+      statement: "The treatment reduced annual turnover.",
+      tier: 3,
+    }));
+    expect(runJson(["fulfill", "claims", write("claims.json", JSON.stringify(claims))]).code).toBe(
+      0,
+    );
+    expect(runJson(["next"]).env.step).toBe("verdicts");
+    // Offline fixture: the real fetch refuses loopback. Supply extracted text
+    // and the ledger outcomes to exercise fulfillment without live websites.
+    writeLedger(
+      runDir,
+      readLedger(runDir).map((entry, index) => ({
+        ...entry,
+        status: statuses[index] ?? "unreachable",
+      })),
+    );
+    for (const entry of readLedger(runDir)) {
+      if (entry.status === "ok") {
+        fs.writeFileSync(
+          layout.fetched(`${entry.hash}.txt`),
+          extractText("<p>The <b>treatment</b> &amp; coaching reduced <i>annual</i> turnover.</p>"),
+        );
+      }
+    }
+    const entries = claims.map((claim) => ({
+      claimId: claim.id,
+      url: claim.citations[0]?.url,
+      verdict: "supported",
+    }));
+    const bad = entries.map((entry, index) =>
+      index === 1 ? { ...entry, quote: "An invented quotation absent from the page" } : entry,
+    );
+    const stateBefore = fs.readFileSync(layout.stateFile, "utf8");
+    const claimsBefore = fs.readFileSync(layout.step("claims.json"), "utf8");
+    const rejected = runJson(["fulfill", "verdicts", write("verdicts.json", JSON.stringify(bad))]);
+    expect(rejected.code).toBe(2);
+    expect(rejected.env.ok).toBe(false);
+    expect(rejected.env.step).toBe("verdicts");
+    expect(rejected.env.errors).toHaveLength(2);
+    expect(rejected.env.errors[0]).toMatch(/^E205: verdicts: 0\.quote: c001.*requires a quote/);
+    expect(rejected.env.errors[1]).toMatch(/^E205: verdicts: 1\.quote: c002.*not found/);
+    expect(fs.readFileSync(layout.stateFile, "utf8")).toBe(stateBefore);
+    expect(fs.existsSync(layout.step("verdicts.json"))).toBe(false);
+    expect(fs.existsSync(layout.matrixFile)).toBe(false);
+
+    const fixed = entries.map((entry, index) =>
+      index < 2
+        ? {
+            ...entry,
+            quote:
+              index === 0
+                ? "TREATMENT & COACHING reduced annual turnover."
+                : "The treatment reduced turnover.",
+          }
+        : entry,
+    );
+    const accepted = runJson([
+      "fulfill",
+      "verdicts",
+      write("verdicts.json", JSON.stringify(fixed)),
+    ]);
+    expect(accepted.code).toBe(0);
+    expect(accepted.env.ok).toBe(true);
+    expect(accepted.env.step).toBe("briefing");
+    expect(fs.readFileSync(layout.step("claims.json"), "utf8")).toBe(claimsBefore);
+    expect(JSON.parse(fs.readFileSync(layout.step("verdicts.json"), "utf8"))).toEqual(fixed);
+    const matrix = JSON.parse(fs.readFileSync(layout.matrixFile, "utf8"));
+    expect(matrix.coverage).toEqual({ tier3: { "single-source": 2, unreachable: 4 } });
+    const cited = runJson(["citations"]);
+    expect(cited.code).toBe(0);
+    expect(cited.env.data?.citations).toMatchObject({
+      documents: [
+        { citedBy: [{ locator: "Table 2 (unchecked)", claimStatus: "single-source" }] },
+        { citedBy: [{ locator: "Table 2 (unchecked)", claimStatus: "single-source" }] },
+      ],
+      unfetched: statuses.slice(2).map((reason) => ({ reason })),
+    });
   });
 });
 

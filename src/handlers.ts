@@ -99,7 +99,7 @@ const verdictsHandler: StepHandler = {
           .join("; ")}`,
       ];
     }
-    const { issues: verdictIssues } = validateVerdicts(context.text, claims);
+    const { issues: verdictIssues } = validateVerdicts(context.text, claims, context.runDir);
     return verdictIssues.map((issue) => `E205: verdicts: ${issue.path}: ${issue.message}`);
   },
   onComplete(context) {
@@ -107,7 +107,7 @@ const verdictsHandler: StepHandler = {
     const claimsRaw = fs.readFileSync(layout.step("claims.json"), "utf8");
     const { claims } = parseClaims(claimsRaw);
     if (!claims) throw new Error("steps/claims.json no longer validates");
-    const { entries } = validateVerdicts(context.text, claims);
+    const { entries } = validateVerdicts(context.text, claims, context.runDir);
     const matrix = deriveMatrix(claims, entries, context.runDir, new Date().toISOString());
     fs.mkdirSync(layout.stateDir, { recursive: true });
     fs.writeFileSync(layout.matrixFile, `${JSON.stringify(matrix, null, 2)}\n`, "utf8");

@@ -1,7 +1,11 @@
+import * as fs from "node:fs";
 import { z } from "zod";
-import { CLAIM_ID_PATTERN, type ClaimsFile } from "./claims.js";
-import { type FetchStatus, readLedger } from "./fetch.js";
-import { normalizeUrl } from "./url.js";
+import type { ClaimsFile } from "./claims.js";
+import { CLAIM_ID_PATTERN } from "./claims.js";
+import type { FetchStatus } from "./fetch.js";
+import { readLedger } from "./fetch.js";
+import { runLayout } from "./rundir.js";
+import { normalizeUrl, urlHash } from "./url.js";
 import { formatZodIssues, parseJsonText } from "./util.js";
 
 export const verdictValueSchema = z.enum(["supported", "partial", "not-found", "contradicts"]);
@@ -10,6 +14,9 @@ export const verdictEntrySchema = z.union([
   z.object({
     claimId: z.string().regex(CLAIM_ID_PATTERN),
     note: z.string().default(""),
+    // Required for supported verdicts only when fetched text is checkable.
+    // That depends on the ledger, so the contextual gate owns the requirement.
+    quote: z.string().optional(),
     url: z.string().url(),
     verdict: verdictValueSchema,
   }),
@@ -108,11 +115,101 @@ export class DocumentSet {
   }
 }
 
-/** Validate the verdict file against claims + ledger context. Returns
+/** These outcomes have no checkable text. Use the same rule for the
+ *  quote exemption and support counting so an exemption cannot grant support. */
+function skipsQuoteCheck(status: FetchStatus | null): boolean {
+  return (
+    status === "unreachable" ||
+    status === "robots-blocked" ||
+    status === "paywalled" ||
+    status === "binary-unreadable"
+  );
+}
+
+function normalizeQuoteText(text: string): string {
+  return (
+    text
+      .toLowerCase()
+      // Upper/lower expansion handles sharp s and ligatures. Preserve dotless
+      // i, and fold final sigma regardless of its position in the quote/page.
+      .replace(/[^\u0131]+/gu, (part) => part.toUpperCase().toLowerCase())
+      .replaceAll("ς", "σ")
+      .replace(/\p{P}/gu, "")
+      .replace(/\s+/gu, " ")
+      .trim()
+  );
+}
+
+/** Presence only, not entailment: a contiguous substring or whole tokens
+ *  in order, with gaps allowed. Each occurrence can satisfy only one token. */
+function containsQuote(page: string, quote: string): boolean {
+  if (page.includes(quote)) return true;
+  const tokens = quote.split(" ");
+  let next = 0;
+  for (const token of page.split(" ")) {
+    if (token === tokens[next]) next += 1;
+    if (next === tokens.length) return true;
+  }
+  return false;
+}
+
+function quoteIssues(entries: readonly VerdictEntry[], runDir: string): VerdictIssue[] {
+  const ledger = new Map(readLedger(runDir).map((entry) => [entry.normalized, entry]));
+  // Many claims can cite one page. Normalize and read each document only once.
+  const pages = new Map<string, string | null>();
+  const issues: VerdictIssue[] = [];
+  entries.forEach((entry, index) => {
+    if ("conflict" in entry || entry.verdict !== "supported") return;
+    const normalized = normalizeUrl(entry.url);
+    const fetched = ledger.get(normalized);
+    if (skipsQuoteCheck(fetched?.status ?? null)) return;
+    const reject = (message: string): void => {
+      issues.push({
+        message: `${entry.claimId} on ${entry.url}: ${message}`,
+        path: `${index}.quote`,
+      });
+    };
+    if (entry.quote === undefined) {
+      reject("supported verdict requires a quote");
+      return;
+    }
+    const quote = normalizeQuoteText(entry.quote);
+    if ([...quote].length < 16) {
+      reject("quote must contain at least 16 normalized characters");
+      return;
+    }
+    if (!fetched) {
+      reject("no fetch ledger entry; cannot check quote");
+      return;
+    }
+    if (!pages.has(normalized)) {
+      try {
+        // Derive the path from the URL, not a caller-editable ledger hash.
+        const text = fs.readFileSync(
+          runLayout(runDir).fetched(`${urlHash(normalized)}.txt`),
+          "utf8",
+        );
+        pages.set(normalized, normalizeQuoteText(text));
+      } catch {
+        pages.set(normalized, null);
+      }
+    }
+    const page = pages.get(normalized);
+    if (page === null || page === undefined) {
+      reject("cannot read fetched text; cannot check quote");
+    } else if (!containsQuote(page, quote)) {
+      reject("quote not found in normalized fetched text (substring or ordered tokens)");
+    }
+  });
+  return issues;
+}
+
+/** Validate the verdict file against claims + fetched evidence. Returns
  *  formatted issues; empty means the file can drive derivation. */
 export function validateVerdicts(
   raw: string,
   claims: ClaimsFile,
+  runDir: string,
 ): { entries: VerdictEntry[]; issues: VerdictIssue[] } {
   const { parsed, error } = parseJsonText(raw);
   if (error !== null) {
@@ -168,6 +265,8 @@ export function validateVerdicts(
     }
     seenPairs.add(pairKey);
   });
+  // Invalid claim/citation pairs are fixed before grounding their evidence.
+  if (issues.length === 0) issues.push(...quoteIssues(entries, runDir));
   return { entries, issues };
 }
 
@@ -195,10 +294,8 @@ export function deriveMatrix(
     const rows: CitationRow[] = claim.citations.map((citation) => {
       const normalized = normalizeUrl(citation.url);
       const ledgerStatus = ledger.get(normalized) ?? null;
-      // Unreachable and robots-blocked documents carry no fetched evidence.
-      const reachable =
-        ledgerStatus === null ||
-        (ledgerStatus !== "unreachable" && ledgerStatus !== "robots-blocked");
+      // A quote-exempt document must never contribute unchecked support.
+      const reachable = !skipsQuoteCheck(ledgerStatus);
       return {
         claimId: claim.id,
         document: documents.documentOf(citation.url),
