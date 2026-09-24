@@ -339,6 +339,22 @@ describe("quote grounding", () => {
     expect(check("The treat reduced turnover.").issues[0]?.message).toContain("not found");
   });
 
+  it("rejects ordered tokens assembled from distant sentences", () => {
+    page(
+      "The drug reduced headaches and then some substantially. Pages and pages of unrelated filler words fill the empty space here and then even more padding follows. Mortality changed by fifty percent overall in the final analysis.",
+    );
+    const issues = check("The drug reduced headaches and then mortality by fifty percent").issues;
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.message).toContain("not found");
+  });
+
+  it("accepts ordered tokens inside the bounded window", () => {
+    page("The drug reduced headaches and then mortality by fifty percent in the trial.");
+    expect(check("The drug reduced headaches and then mortality by fifty percent").issues).toEqual(
+      [],
+    );
+  });
+
   it("strips Unicode punctuation and collapses whitespace after stripping", () => {
     page("THE “TREATMENT”\t,  REDUCED\nTURNOVER.");
     expect(check("the treatment reduced turnover").issues).toEqual([]);

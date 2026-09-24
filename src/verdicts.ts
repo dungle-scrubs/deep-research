@@ -140,15 +140,33 @@ function normalizeQuoteText(text: string): string {
   );
 }
 
+/** Highest count of page tokens a token-ordered match can cover.
+ *  Bounds the gap so quotes assembled from distant sentences fail. */
+const QUOTE_WINDOW_FACTOR = 3;
+
 /** Presence only, not entailment: a contiguous substring or whole tokens
- *  in order, with gaps allowed. Each occurrence can satisfy only one token. */
+ *  in order inside a bounded window. Each occurrence can satisfy only one
+ *  token, and the span from first to last matched token covers at most
+ *  QUOTE_WINDOW_FACTOR times the quote token count. */
 function containsQuote(page: string, quote: string): boolean {
   if (page.includes(quote)) return true;
   const tokens = quote.split(" ");
-  let next = 0;
-  for (const token of page.split(" ")) {
-    if (token === tokens[next]) next += 1;
-    if (next === tokens.length) return true;
+  const pageTokens = page.split(" ");
+  const limit = tokens.length * QUOTE_WINDOW_FACTOR;
+  const starts: number[] = [];
+  for (let index = 0; index < pageTokens.length; index += 1) {
+    if (pageTokens[index] === tokens[0]) starts.push(index);
+  }
+  for (const start of starts) {
+    let next = 0;
+    for (let index = start; index < pageTokens.length; index += 1) {
+      if (pageTokens[index] === tokens[next]) next += 1;
+      if (next === tokens.length) {
+        if (index - start + 1 <= limit) return true;
+        break;
+      }
+      if (index - start + 1 >= limit) break;
+    }
   }
   return false;
 }

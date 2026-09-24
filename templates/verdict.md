@@ -28,9 +28,11 @@ For each `supported` entry, the CLI casefolds the quote and fetched text,
 strips Unicode punctuation, collapses whitespace to single spaces, and
 trims the result. The quote must have at least 16 normalized characters.
 It passes if it is a contiguous substring of the normalized text, or if
-all its whitespace-separated tokens appear in the text in the same order.
-Gaps are allowed; each token occurrence can be used only once. This tolerates
-markup/entity extraction differences, but not absent or reordered words.
+all its whitespace-separated tokens appear in the text in the same order
+inside a bounded window: the span from the first to the last matched token
+covers at most three times the quote token count. Small gaps are allowed;
+each token occurrence can be used only once. This tolerates markup/entity
+extraction differences, but not absent, reordered, or distantly assembled words.
 
 The gate skips ledger outcomes `unreachable`, `robots-blocked`, `paywalled`,
 and `binary-unreadable`, even without a quote. Those documents never count

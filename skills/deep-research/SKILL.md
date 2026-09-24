@@ -71,7 +71,8 @@ verdict must include a `quote` copied from the fetched text, separate from
 the unchecked citation `locator`. The CLI requires at least 16 characters
 after casefolding, stripping punctuation, and collapsing whitespace. It
 accepts a contiguous substring or all whitespace-separated quote tokens in
-order, with gaps allowed and no reuse of a token occurrence. The gate
+order inside a window of at most three times the quote token count, with small
+gaps allowed and no reuse of a token occurrence. The gate
 skips `unreachable`, `robots-blocked`, `paywalled`, and `binary-unreadable`
 documents; they never count toward support. Other verdicts and conflict
 entries need no quote. Fix E205 quote violations in the verdicts file and

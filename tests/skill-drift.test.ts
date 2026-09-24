@@ -23,6 +23,7 @@ describe("skill/binary drift", () => {
       expect(document).toContain("contiguous substring");
       expect(document).toContain("tokens");
       expect(document).toContain("order");
+      expect(document).toContain("three times");
       expect(document.toLowerCase()).toContain("gaps");
       expect(document).toContain("entailment");
       for (const status of ["unreachable", "robots-blocked", "paywalled", "binary-unreadable"]) {
