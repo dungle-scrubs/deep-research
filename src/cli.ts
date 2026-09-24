@@ -101,7 +101,7 @@ export function buildProgram(): Command {
 
   program
     .command("fulfill")
-    .description("Validate <file> against the step checks; on success advance state")
+    .description("Validate <file>; advance when complete (verdicts accept partial batches)")
     .argument("<step>", "pipeline step to fulfill")
     .argument("<file>", "file holding the step output")
     .option("--root <dir>", "run root directory (overrides DR_ROOT and cwd)")

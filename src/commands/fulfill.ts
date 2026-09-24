@@ -5,6 +5,7 @@ import { runOnComplete, STEP_HANDLERS } from "../handlers.js";
 import { runLayout } from "../rundir.js";
 import { nextStep, STEPS, type StepName } from "../steps.js";
 import { readTextFile } from "../validate.js";
+import { fulfillVerdicts } from "./fulfill-verdicts.js";
 import { advanceState, loadStateOrFail, notTakeable } from "./shared.js";
 
 export interface FulfillOptions {
@@ -34,7 +35,7 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
   if (step !== state.step) return notTakeable(runDir, step, state.step);
 
   const handler = STEP_HANDLERS[step];
-  if (!handler) {
+  if (!handler && step !== "verdicts") {
     return fail(
       2,
       runDir,
@@ -53,6 +54,9 @@ export function cmdFulfill(options: FulfillOptions): HandlerResult {
   }
 
   const context = { runDir, state, text };
+  // Verdict batches own their writes and conditional transition. All other
+  // missing handlers were rejected above as CLI-only steps.
+  if (!handler) return fulfillVerdicts(context);
   const violations = handler.validate(context);
   if (violations.length > 0) {
     return fail(

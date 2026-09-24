@@ -12,6 +12,9 @@ below and the evidence table against the matrix.
 - `misrepresented`, `not-found`: excluded from the report body; listed in
   the Discarded claims appendix.
 - `unreachable`: usable only with a source-not-checked caveat.
+- `skipped`: usable only with a skipped/source-not-checked caveat, never as
+  supporting evidence. Carry every skipped-pair caveat from the briefing
+  into Gaps and uncertainty, including on otherwise supported claims.
 
 ## Report structure (the finalize gate enforces these sections)
 
@@ -37,6 +40,8 @@ below and the evidence table against the matrix.
 Every claim the report uses (verified, single-source, conflict) must have
 an Evidence table row whose Status cell matches the matrix. An unreachable
 claim used in the report needs a row carrying the literal label
-`source-not-checked`. Misrepresented and not-found claims must appear by
-id under Discarded claims. No fabricated citations: every citation in the
-table comes from claims.json.
+`source-not-checked`. Any evidence row for a claim with skipped citations
+must carry both `skipped` and `source-not-checked` (use an extra Caveat column
+when the Status cell must match exactly). Misrepresented and not-found
+claims must appear by id under Discarded claims. No fabricated citations:
+every citation in the table comes from claims.json.

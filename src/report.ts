@@ -121,6 +121,15 @@ export function gateReport(report: string, matrix: Matrix): readonly GateViolati
         });
       }
     }
+    if (row && claim.citations.some((citation) => citation.verdict === "skipped")) {
+      const rowText = row.join(" ").toLowerCase();
+      if (!rowText.includes("skipped") || !rowText.includes("source-not-checked")) {
+        violations.push({
+          fixableAt: fixable,
+          message: `claim ${claim.id}: skipped citation used without the skipped/source-not-checked caveat`,
+        });
+      }
+    }
     if (claim.status === "unreachable" && row) {
       const rowText = row.join(" ").toLowerCase();
       if (!rowText.includes("source-not-checked")) {

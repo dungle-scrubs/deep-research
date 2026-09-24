@@ -213,6 +213,22 @@ describe("status derivation rules", () => {
     expect(matrix.claims[0]?.status).toBe("unreachable");
   });
 
+  it("derives the same matrix regardless of batch order, including skipped pairs", () => {
+    const claims = [claim({}), claim({ id: "c002", tier: 3 })];
+    const entries = [
+      { claimId: "c001", note: "", url: "https://a.example/x", verdict: "supported" },
+      { claimId: "c001", note: "", url: "https://b.example/y", verdict: "skipped" },
+      { claimId: "c002", note: "", url: "https://a.example/x", verdict: "skipped" },
+      { claimId: "c002", note: "", url: "https://b.example/y", verdict: "not-found" },
+    ] as const;
+    const first = deriveMatrix(claims, entries, runDir, "2026-01-01T00:00:00Z");
+    const reversed = deriveMatrix(claims, [...entries].reverse(), runDir, first.derivedAt);
+    expect(first).toEqual(reversed);
+    expect(first.coverage).toEqual({ tier2: { "single-source": 1 }, tier3: { skipped: 1 } });
+    expect(first.claims[0]?.citations.map((row) => row.verdict)).toEqual(["supported", "skipped"]);
+    expect(first.caveats).toHaveLength(2);
+  });
+
   it("coverage counts by tier and status", () => {
     writeLedger(runDir, [
       ledgerEntry("https://a.example/x", "ok"),
