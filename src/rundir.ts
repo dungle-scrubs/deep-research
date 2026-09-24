@@ -10,6 +10,8 @@ export interface RunLayout {
   readonly runDir: string;
   /** claims.json -> steps/claims.json symlink at the run root. */
   readonly claimsFile: string;
+  /** citations.json written at finalize. */
+  readonly citationsFile: string;
   readonly fetchedDir: string;
   readonly ledgerFile: string;
   readonly matrixFile: string;
@@ -29,6 +31,7 @@ export function runLayout(runDir: string): RunLayout {
   const stepsDir = path.join(runDir, "steps");
   return {
     claimsFile: path.join(runDir, "claims.json"),
+    citationsFile: path.join(runDir, "citations.json"),
     fetched(name) {
       return path.join(runDir, "fetched", name);
     },

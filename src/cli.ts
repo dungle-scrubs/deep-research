@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { cmdCitations } from "./commands/citations.js";
 import { cmdFetch, cmdRetryFetch } from "./commands/fetch.js";
 import { cmdFinalize } from "./commands/finalize.js";
 import { cmdFulfill } from "./commands/fulfill.js";
@@ -121,6 +122,22 @@ export function buildProgram(): Command {
         return;
       }
       emit(cmdFulfill({ file, runDir, step }), asJson);
+    });
+
+  program
+    .command("citations")
+    .description("Structured citation export for the run (join of claims, matrix, fetch ledger)")
+    .option("--format <fmt>", "output format: json (default)")
+    .option("--root <dir>", "run root directory (overrides DR_ROOT and cwd)")
+    .option("--json", "emit the stable envelope {ok, run, step, errors[]}")
+    .action(async (opts: CliOpts & { format?: string }) => {
+      const root = resolveRoot({ rootFlag: opts.root });
+      const runDir = locateRun(root);
+      if (!runDir) {
+        emit(noRunFound(root), opts.json === true);
+        return;
+      }
+      emit(await cmdCitations(runDir, opts.format), opts.json === true);
     });
 
   program

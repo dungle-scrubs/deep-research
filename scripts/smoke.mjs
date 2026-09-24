@@ -137,6 +137,7 @@ try {
     "report.md",
     "sources.md",
     "state/matrix.json",
+    "citations.json",
     "state/fetch-ledger.json",
     "steps/claims.json",
   ]) {

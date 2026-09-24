@@ -13,7 +13,7 @@ function pipelineOverview(): string {
     "Pipeline (linear, exactly one takeable step at a time):\n" +
     `${lines.join("\n")}\n\n` +
     "Commands: dr new <topic> [--root <dir>] | dr next | dr fulfill <step> <file> | " +
-    "dr retry-fetch | dr status | dr help [<step>]\n" +
+    "dr citations [--format json] | dr retry-fetch | dr status | dr help [<step>]\n" +
     "Every command accepts --json (envelope {ok, run, step, errors[]}). " +
     "Exit codes: 0 ok, 1 usage, 2 gate/validation, 3 nothing takeable, 4 internal."
   );

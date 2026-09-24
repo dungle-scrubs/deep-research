@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { renderCitations } from "../citations.js";
 import type { ClaimsFile } from "../claims.js";
 import { fail, type HandlerResult, ok } from "../envelope.js";
 import { gateReport, generateSources, readClaimsFile, readMatrixFile } from "../report.js";
@@ -57,6 +58,11 @@ export function cmdFinalize(runDir: string): HandlerResult {
   const layout = runLayout(runDir);
   try {
     fs.writeFileSync(layout.sourcesFile, generateSources(claims), "utf8");
+    fs.writeFileSync(
+      layout.citationsFile,
+      `${JSON.stringify(renderCitations(runDir, new Date().toISOString()), null, 2)}\n`,
+      "utf8",
+    );
     advanceState(runDir, state, "finalize");
   } catch (error) {
     return fail(4, runDir, "finalize", [`E401: finalize failed: ${errorMessage(error)}`]);

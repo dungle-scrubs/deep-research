@@ -128,6 +128,13 @@ describe("prose pipeline", () => {
     expect(env.data?.completed).toEqual(["brief", "foundation", "gaps", "followup"]);
   });
 
+  it("rejects citations before derivation with exit 1", () => {
+    newRun();
+    const { code, env } = runJson(["citations"]);
+    expect(code).toBe(1);
+    expect(env.errors[0]).toMatch(/^E104/);
+  });
+
   it("rejects empty fulfill with exit 2 and does not advance", () => {
     newRun();
     const { code, env } = runJson(["fulfill", "brief", write("empty.md", "  \n")]);
@@ -274,6 +281,20 @@ describe("prose pipeline", () => {
     expect(done.code).toBe(0);
     expect(done.env.step).toBe("done");
     expect(fs.existsSync(path.join(runDir, "sources.md"))).toBe(true);
+    expect(fs.existsSync(path.join(runDir, "citations.json"))).toBe(true);
+    // dr citations reads the same export from the closed run.
+    const cited = runJson(["citations"]);
+    expect(cited.code).toBe(0);
+    const exportData = cited.env.data?.citations as {
+      documents: { url: string; citedBy: { claimId: string; claimStatus: string }[] }[];
+      unfetched: { url: string }[];
+    };
+    expect(exportData.documents).toHaveLength(0);
+    expect(exportData.unfetched).toHaveLength(1);
+    expect(exportData.unfetched[0]?.url).toBe("http://127.0.0.1/x");
+    expect(exportData.unfetched[0]?.citedBy[0]?.claimStatus).toBe("unreachable");
+    // Unknown format is a usage error.
+    expect(runJson(["citations", "--format", "bibtex"]).code).toBe(1);
     expect(runJson(["next"]).code).toBe(3);
     expect(runJson(["status"]).env.data?.current).toBe("done");
     // A closed run can be read but not advanced.
