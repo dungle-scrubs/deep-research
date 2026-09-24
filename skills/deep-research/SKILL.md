@@ -68,12 +68,50 @@ Read `dr help <step>` for the summary, the recommended query, and the
 good-output line. The CLI validates your fulfill and lists each violation
 it finds; fix those, not others.
 
-## Failure handling
+## When dr fails
 
-- Exit 2 with E205 lines: your fulfill file failed validation; each line
-  names the field and the problem.
+Ordinary failures first - these are the tool working, not bugs:
+
+- Exit 2 with E205 lines: the fulfill file failed validation; each line
+  names the field and the problem. Fix the file, fulfill again.
 - Exit 2 with E207 lines: the final report gate; fix report.md.
-- Unreachable sources are outcomes, not failures: the run continues, the
-  caveat system carries the uncertainty, `dr retry-fetch` re-attempts.
-- A closed run (state done) can be read (`status`, `help`) but not
-  advanced.
+- Unreachable sources are outcomes, not failures: the run continues,
+  the caveat system carries the uncertainty, and `dr retry-fetch`
+  re-attempts them.
+- A closed run (state done) can be read (`status`, `help`, `citations`)
+  but not advanced.
+
+### The auto-file protocol
+
+Most dr exits are not bugs. File only these:
+
+- **E4xx** (internal: E401, E402) and **E499** (crash) - product defects.
+- Any stack trace on stderr.
+- An exit code that contradicts the envelope's `ok`.
+
+Never file E1xx (caller misuse), E2xx (gates working), or E3xx (fetch
+outcomes - they live in the ledger). Those are telemetry, not issues.
+
+When a fileable failure occurs, as the agent session driving dr:
+
+1. Capture: the exact command line, the full envelope, the exit code,
+   and from the run directory `state/state.json`, the last 20 lines of
+   `state/events.jsonl`, and (if the failure is fetch-related) the
+   matching `state/fetch-ledger.json` rows.
+2. Dedupe: search open issues for the E-code and the first line of the
+   error message:
+   `gh search issues --repo dungle-scrubs/deep-research --state open "E401 cannot read run state"`
+   A hit means comment on that issue with your new evidence, not a new
+   issue.
+3. File if new:
+   `gh issue create --repo dungle-scrubs/deep-research --label auto --title "E401: <first error line>" --body-file <file>`
+   Body: the captured material under a "## Evidence" heading plus a
+   "## Command" line. Redact nothing - dr handles no secrets, but check
+   pasted run content for anything the run's topic dragged in.
+4. After filing, continue the run's work where possible; a closed run
+   can be re-read, and an open one resumes at its recorded step.
+
+If your session has a Sentry channel with event ingestion, also send the
+event with tags `deep-research`, the E-code, and the run id. (The
+`mcpw sentry` app is read/analyze only - it cannot ingest; use the
+project's DSN endpoint if a shared project exists.)
