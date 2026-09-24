@@ -260,6 +260,73 @@ describe("incremental verdict fulfillment", () => {
     expect(files.map(read)).toEqual(before);
   });
 
+  it("blocks batches when retry-fetch makes an accepted quoteless verdict checkable", () => {
+    const created = run("new", "Retry fixture");
+    expect(created.code).toBe(0);
+    for (const [step, text] of [
+      ["brief", "# Brief\n\nA question."],
+      ["foundation", "# Foundation\n\nhttps://example.com"],
+      ["gaps", '# Gaps\n\n```json\n["What else?"]\n```'],
+      ["followup", "# Followup\n\nhttps://example.com"],
+    ]) {
+      expect(fulfill(step ?? "", text).code).toBe(0);
+    }
+    expect(
+      fulfill("claims", [
+        {
+          citations: [{ locator: "p1", title: "Fixture", url: URL_A }],
+          id: "c001",
+          statement: QUOTE,
+          tier: 2,
+        },
+        {
+          citations: [{ locator: "p1", title: "Fixture", url: URL_B }],
+          id: "c002",
+          statement: "Another statement.",
+          tier: 3,
+        },
+      ]).code,
+    ).toBe(0);
+    expect(run("next").envelope.step).toBe("verdicts");
+    const layout = runLayout(created.envelope.run);
+    // URL_A stays unreachable: batch 1 accepts a quoteless supported verdict.
+    // URL_B is checkable from the start.
+    const flipped = readLedger(created.envelope.run).map((entry) => ({
+      ...entry,
+      status: entry.normalized.includes("/b") ? "ok" : entry.status,
+    }));
+    writeLedger(created.envelope.run, flipped);
+    for (const entry of readLedger(created.envelope.run)) {
+      if (entry.status === "ok") fs.writeFileSync(layout.fetched(`${entry.hash}.txt`), QUOTE);
+    }
+    expect(fulfill("verdicts", [{ claimId: "c001", url: URL_A, verdict: "supported" }]).code).toBe(
+      0,
+    );
+    // Retry recovers URL_A. The next batch must fail on the stale history,
+    // not silently count the unchecked verdict.
+    writeLedger(
+      created.envelope.run,
+      readLedger(created.envelope.run).map((entry) => ({ ...entry, status: "ok" as const })),
+    );
+    for (const entry of readLedger(created.envelope.run)) {
+      fs.writeFileSync(layout.fetched(`${entry.hash}.txt`), QUOTE);
+    }
+    const blocked = fulfill("verdicts", [{ claimId: "c002", url: URL_B, verdict: "not-found" }]);
+    expect(blocked.code).toBe(2);
+    expect(blocked.envelope.errors.join("\n")).toMatch(/batch 1.*requires a quote/);
+    // Resubmitting the stale pair with its quote unblocks; last write wins.
+    const fixed = fulfill("verdicts", [
+      { claimId: "c002", url: URL_B, verdict: "not-found" },
+      { claimId: "c001", quote: QUOTE, url: URL_A, verdict: "supported" },
+    ]);
+    expect(fixed.code).toBe(0);
+    expect(fixed.envelope.step).toBe("briefing");
+    expect(JSON.parse(read(layout.matrixFile)).coverage).toEqual({
+      tier2: { "single-source": 1 },
+      tier3: { "not-found": 1 },
+    });
+  });
+
   it("retries an uncommitted batch after projection I/O failure without losing accepted entries", () => {
     const layout = fixture();
     expect(fulfill("verdicts", [supported(URL_A)]).code).toBe(0);
