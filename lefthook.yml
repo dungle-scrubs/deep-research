@@ -12,4 +12,4 @@ pre-commit:
 pre-push:
   commands:
     trufflehog:
-      run: trufflehog git file://. --results=verified --since HEAD
+      run: trufflehog git file://. --results=verified --only-verified
