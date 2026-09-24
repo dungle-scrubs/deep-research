@@ -12,6 +12,8 @@ export interface RunLayout {
   readonly claimsFile: string;
   /** citations.json written at finalize. */
   readonly citationsFile: string;
+  /** Per-run command event stream: one JSON line per command start/end. */
+  readonly eventsFile: string;
   readonly fetchedDir: string;
   readonly ledgerFile: string;
   readonly matrixFile: string;
@@ -32,6 +34,7 @@ export function runLayout(runDir: string): RunLayout {
   return {
     claimsFile: path.join(runDir, "claims.json"),
     citationsFile: path.join(runDir, "citations.json"),
+    eventsFile: path.join(stateDir, "events.jsonl"),
     fetched(name) {
       return path.join(runDir, "fetched", name);
     },

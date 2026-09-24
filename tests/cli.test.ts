@@ -338,6 +338,33 @@ describe("envelope and help", () => {
     expect(runJson(["help", "bogus"]).code).toBe(1);
   });
 
+  it("logs command start/end pairs to state/events.jsonl", () => {
+    run(["new", "Eventstream run"]);
+    run(["status"]);
+    runJson(["next"]);
+    const runDir = path.join(workdir, fs.readdirSync(workdir)[0] ?? "");
+    const lines = fs
+      .readFileSync(path.join(runDir, "state", "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const statusStart = lines.find((l) => l["cmd"] === "status" && l["event"] === "start");
+    const statusEnd = lines.find((l) => l["cmd"] === "status" && l["event"] === "end");
+    expect(statusStart).toBeDefined();
+    expect(statusEnd).toBeDefined();
+    expect(statusEnd?.["exitCode"]).toBe(0);
+    expect(statusEnd?.["ok"]).toBe(true);
+    expect(statusStart?.["pid"]).toBe(statusEnd?.["pid"]);
+  });
+
+  it("emits an E106 envelope for commander argument errors", () => {
+    const { code, env } = runJson(["fulfill"]);
+    expect(code).toBe(1);
+    expect(env.errors[0]).toMatch(/^E106/);
+    expect(env.ok).toBe(false);
+    expect(env.run).toBeNull();
+  });
+
   it("resumes from directory state alone", () => {
     run(["new", "Topic"]);
     run(["fulfill", "brief", write("brief.md", BRIEF)]);

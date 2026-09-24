@@ -1,3 +1,4 @@
+import { writeSync } from "node:fs";
 import { Command } from "commander";
 import { cmdCitations } from "./commands/citations.js";
 import { cmdFetch, cmdRetryFetch } from "./commands/fetch.js";
@@ -8,6 +9,7 @@ import { cmdNext } from "./commands/next.js";
 import { cmdNew, locateRun, noRunFound, readStepArg } from "./commands/shared.js";
 import { cmdStatus } from "./commands/status.js";
 import type { HandlerResult } from "./envelope.js";
+import { appendRunEvent, endEvent, startEvent } from "./events.js";
 import { resolveRoot } from "./run.js";
 import { type RunState, readState } from "./state.js";
 import { errorMessage } from "./util.js";
@@ -17,7 +19,7 @@ interface CliOpts {
   json?: boolean;
 }
 
-function emit(result: HandlerResult, asJson: boolean): void {
+function emit(result: HandlerResult, asJson: boolean, cmd: string): void {
   if (asJson) {
     process.stdout.write(`${JSON.stringify(result.envelope, null, 2)}\n`);
   } else {
@@ -26,7 +28,13 @@ function emit(result: HandlerResult, asJson: boolean): void {
       for (const error of result.envelope.errors) process.stdout.write(`${error}\n`);
     }
   }
-  process.exit(result.code);
+  const run = result.envelope.run;
+  if (run !== null) {
+    appendRunEvent(run, endEvent(cmd, result.code, result.envelope.ok, result.envelope.errors));
+  }
+  // Natural exit, not process.exit(): pending stdout writes flush before
+  // the process ends, so a piped consumer never loses the envelope.
+  process.exitCode = result.code;
 }
 
 export function buildProgram(): Command {
@@ -43,7 +51,7 @@ export function buildProgram(): Command {
     .option("--root <dir>", "run root directory (overrides DR_ROOT and cwd)")
     .option("--json", "emit the stable envelope {ok, run, step, errors[]}")
     .action((topic: string, opts: CliOpts) => {
-      emit(cmdNew({ rootFlag: opts.root, topic }), opts.json === true);
+      emit(cmdNew({ rootFlag: opts.root, topic }), opts.json === true, "new");
     });
 
   program
@@ -55,9 +63,10 @@ export function buildProgram(): Command {
       const root = resolveRoot({ rootFlag: opts.root });
       const runDir = locateRun(root);
       if (!runDir) {
-        emit(noRunFound(root), opts.json === true);
+        emit(noRunFound(root), opts.json === true, "next");
         return;
       }
+      enterRun(runDir, "next");
       // CLI steps execute when takeable; fetch and finalize run here.
       let state: RunState;
       try {
@@ -75,18 +84,19 @@ export function buildProgram(): Command {
             human: `Cannot read run state: ${errorMessage(error)}`,
           },
           opts.json === true,
+          "next",
         );
         return;
       }
       if (state.step === "fetch") {
-        emit(await cmdFetch(runDir), opts.json === true);
+        emit(await cmdFetch(runDir), opts.json === true, "next");
         return;
       }
       if (state.step === "finalize") {
-        emit(cmdFinalize(runDir), opts.json === true);
+        emit(cmdFinalize(runDir), opts.json === true, "next");
         return;
       }
-      emit(cmdNext(runDir), opts.json === true);
+      emit(cmdNext(runDir), opts.json === true, "next");
     });
 
   program
@@ -102,9 +112,10 @@ export function buildProgram(): Command {
       const root = resolveRoot({ rootFlag: opts.root });
       const runDir = locateRun(root);
       if (!runDir) {
-        emit(noRunFound(root), asJson);
+        emit(noRunFound(root), asJson, "fulfill");
         return;
       }
+      enterRun(runDir, "fulfill");
       if (!step) {
         emit(
           {
@@ -118,10 +129,11 @@ export function buildProgram(): Command {
             human: `Unknown step: ${stepRaw}.`,
           },
           asJson,
+          "fulfill",
         );
         return;
       }
-      emit(cmdFulfill({ file, runDir, step }), asJson);
+      emit(cmdFulfill({ file, runDir, step }), asJson, "fulfill");
     });
 
   program
@@ -134,10 +146,11 @@ export function buildProgram(): Command {
       const root = resolveRoot({ rootFlag: opts.root });
       const runDir = locateRun(root);
       if (!runDir) {
-        emit(noRunFound(root), opts.json === true);
+        emit(noRunFound(root), opts.json === true, "citations");
         return;
       }
-      emit(await cmdCitations(runDir, opts.format), opts.json === true);
+      enterRun(runDir, "citations");
+      emit(await cmdCitations(runDir, opts.format), opts.json === true, "citations");
     });
 
   program
@@ -149,10 +162,11 @@ export function buildProgram(): Command {
       const root = resolveRoot({ rootFlag: opts.root });
       const runDir = locateRun(root);
       if (!runDir) {
-        emit(noRunFound(root), opts.json === true);
+        emit(noRunFound(root), opts.json === true, "retry-fetch");
         return;
       }
-      emit(await cmdRetryFetch(runDir), opts.json === true);
+      enterRun(runDir, "retry-fetch");
+      emit(await cmdRetryFetch(runDir), opts.json === true, "retry-fetch");
     });
 
   program
@@ -164,10 +178,11 @@ export function buildProgram(): Command {
       const root = resolveRoot({ rootFlag: opts.root });
       const runDir = locateRun(root);
       if (!runDir) {
-        emit(noRunFound(root), opts.json === true);
+        emit(noRunFound(root), opts.json === true, "status");
         return;
       }
-      emit(cmdStatus(runDir), opts.json === true);
+      enterRun(runDir, "status");
+      emit(cmdStatus(runDir), opts.json === true, "status");
     });
 
   program
@@ -178,10 +193,101 @@ export function buildProgram(): Command {
     .option("--json", "emit the stable envelope {ok, run, step, errors[]}")
     .action((stepRaw: string | undefined, opts: CliOpts) => {
       const root = resolveRoot({ rootFlag: opts.root });
-      emit(cmdHelp(locateRun(root), stepRaw), opts.json === true);
+      emit(cmdHelp(locateRun(root), stepRaw), opts.json === true, "help");
     });
 
   return program;
 }
 
-buildProgram().parse();
+// The run the current invocation resolved, for crash reporting.
+let crashRun: string | null = null;
+
+function enterRun(runDir: string, cmd: string): void {
+  crashRun = runDir;
+  appendRunEvent(runDir, startEvent(cmd));
+}
+
+function crashEnvelope(kind: string, error: unknown): string {
+  return `${JSON.stringify(
+    {
+      errors: [`E499: ${kind}: ${errorMessage(error)}`],
+      ok: false,
+      run: crashRun,
+      step: null,
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+process.on("uncaughtException", (error) => {
+  if (crashRun !== null) {
+    appendRunEvent(crashRun, {
+      cmd: "unknown",
+      errors: [`E499: uncaughtException: ${errorMessage(error)}`],
+      event: "crash",
+      pid: process.pid,
+      ts: new Date().toISOString(),
+    });
+  }
+  try {
+    writeSync(1, crashEnvelope("uncaughtException", error));
+  } catch {
+    // Nothing more can be delivered; the crash event above is on disk.
+  }
+  process.exit(4);
+});
+
+process.on("unhandledRejection", (reason) => {
+  if (crashRun !== null) {
+    appendRunEvent(crashRun, {
+      cmd: "unknown",
+      errors: [`E499: unhandledRejection: ${errorMessage(reason)}`],
+      event: "crash",
+      pid: process.pid,
+      ts: new Date().toISOString(),
+    });
+  }
+  try {
+    writeSync(1, crashEnvelope("unhandledRejection", reason));
+  } catch {
+    // Nothing more can be delivered; the crash event above is on disk.
+  }
+  process.exit(4);
+});
+
+function main(): void {
+  const program = buildProgram();
+  // exitOverride and output routing apply per command, including
+  // subcommands; argument errors become E106 envelopes, help text
+  // still flows to stdout.
+  for (const command of [program, ...program.commands]) {
+    command.exitOverride();
+    command.configureOutput({
+      writeErr: () => {},
+      writeOut: (text) => process.stdout.write(text),
+    });
+  }
+  try {
+    program.parse();
+  } catch (error) {
+    const code = (error as { code?: string }).code ?? "";
+    if (code.endsWith("helpDisplayed") || code.endsWith("versionDisplayed")) {
+      // Help/version text is already on stdout; a clean exit.
+      process.exitCode = 0;
+      return;
+    }
+    // Commander argument errors join the envelope contract as E106.
+    const message = (error as { message?: string }).message ?? "unknown CLI error";
+    process.stdout.write(
+      `${JSON.stringify(
+        { errors: [`E106: ${message}`], ok: false, run: null, step: null },
+        null,
+        2,
+      )}\n`,
+    );
+    process.exitCode = 1;
+  }
+}
+
+main();
