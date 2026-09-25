@@ -79,9 +79,15 @@ a model artifact is `result`, and a successful partial verdict batch is
 `partial`. None means that the whole pipeline completed. Legacy rows remain
 readable without invented historical step context.
 
-Success at `done` returns absolute `report`, `citations`, and `sources`
-paths, plus the engine matrix's `coverage`. Ordinary finalize returns the
-same data. A resumed done run launches no model and returns that result.
+Success at `done` returns `gate: "passed"`, absolute `report` and `citations`
+paths, run-relative `sources: "sources.md"`, and the engine matrix's
+`coverage`. Ordinary finalize returns the same data. A resumed done run
+launches no model and returns that result.
+
+A cleanup or final progress-drain failure does not replace the result or its
+exit code. It adds `data.cleanupErrors` with E401 diagnostics, also printed
+in human mode. Only an engine post-commit failure sets `data.committed`;
+cleanup alone makes no claim that work committed.
 
 Both drivers produce the same canonical research artifacts and engine
 command events under equal inputs and policy. Timestamps, process IDs,
@@ -90,9 +96,11 @@ correlation IDs, and run paths differ. Drive also writes work events and
 
 ## Fetches and verdict lanes
 
-Drive starts with the normal plain-first fetch, then requests at most one
-guarded scraper recovery pass before any verdict worker. A scraper attempt
-already recorded by the initial fetch is not repeated, even if it failed.
+Drive starts with the normal plain-first fetch, then requests a guarded
+scraper recovery pass before any verdict worker. Resume can continue an
+interrupted or failed pass for URLs with no recorded scraper acquisition.
+A scraper attempt already recorded in the ledger is not repeated, even if
+it failed.
 Drive uses the complete ledger, not only newly changed retry rows. SSRF and
 robots refusals remain refusals through both tiers.
 
@@ -108,7 +116,10 @@ independent corroborating opinions.
 
 Only provider-unavailable classes advance the saved route chain:
 `rate-limit`, `usage-limit`, `quota`, `auth`, `transport`, `unavailable`.
-Each route is tried once per work item, within the attempt cap. Work failures
+Each unavailable route is exhausted once per work item. Parent cancellation
+(SIGINT, SIGTERM, or another lane's failure) records `canceled` separately
+from a worker failure. Resume retries that route at the next attempt number,
+within the same fixed cap; cancellation does not select a fallback. Work failures
 (`task`, `budget`, `rejected`, `native`, `timeout`, `trust-refused`) stop.
 Malformed or contradictory hcn terminals and hcn internal failures return
 E401. A question stops with its confirmed session ID and question in the
@@ -141,11 +152,19 @@ clean stored candidate can be reused after interruption only when its full
 assignment remains unresolved and its hashes match. Already accepted pairs
 are not replayed; mixed assignments are rebuilt for only unresolved pairs.
 A launch without a conclusive result stops for manual repair. It does not
-receive a fresh attempt allowance.
+receive a fresh attempt allowance. A recorded parent cancellation can use
+the next slot, but it cannot reset the cap. Older `stopped` records do not
+establish parent cancellation and still require manual repair.
 
 No fetch retry runs alongside verdict workers or after accepted drive
 batches. Changed evidence after accepted batches stops for reconciliation.
-An interrupted scraper recovery also stops rather than running another pass.
+After an interrupted or failed scraper recovery, resume retries only URLs
+that are not ok and have no recorded scraper acquisition. If none remain,
+it clears the started flag and records `fetch recovery skipped: no untried
+scraper acquisitions remain` in the journal's `recoveryNote`. If verdict
+batches were accepted manually, it skips recovery with `fetch recovery
+skipped: verdict batches already accepted`. Verdict work can then proceed;
+the evidence-change check still applies.
 
 `state/mutation.json` admits one writer. A second drive or manual mutation
 fails while the owner holds it; read-only status/help still work. A stale
@@ -162,7 +181,9 @@ refused before the first model launch. Drive checks local identities against
 the public choose-model registry at
 `~/.agents/skills/choose-model/references/registry.json` and the non-secret
 `hcn inspect pi --models --json` provider/model list. Both must agree. It
-rechecks the selected route immediately before spawning. It never reads
+rechecks the selected route before counting an attempt or writing its start
+event. A refusal returns E109 on both the initial invocation and resume,
+without consuming a slot. It never reads
 credential-bearing provider configuration to establish identity.
 
 Locality metadata is a trusted administrative assertion, not proof against

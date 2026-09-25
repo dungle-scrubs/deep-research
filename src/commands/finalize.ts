@@ -80,10 +80,11 @@ export function cmdFinalize(runDir: string): HandlerResult {
 export function doneResult(runDir: string, human = "Run done."): HandlerResult {
   const layout = runLayout(runDir);
   return ok(runDir, "done", human, {
+    gate: "passed",
     report: layout.reportFile,
     coverage: readMatrixFile(runDir).coverage,
     citations: layout.citationsFile,
-    sources: layout.sourcesFile,
+    sources: "sources.md",
   });
 }
 

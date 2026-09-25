@@ -12,7 +12,8 @@ if (args[0] === "inspect") {
   const prompt = readFileSync(value("--prompt-file"), "utf8");
   const step = /DR_STEP: (\w+)/.exec(prompt)?.[1];
   emit({ kind: "identity", sessionId: "fixture-session" });
-  if (model === "wait") await new Promise((resolve) => setTimeout(resolve, 30_000));
+  if (model === "wait" || (model === "wait-once" && value("--cwd").endsWith("/1")))
+    await new Promise((resolve) => setTimeout(resolve, 30_000));
   if (model === "unavailable" || model === "task") {
     emit({
       kind: "failure",

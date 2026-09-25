@@ -2,7 +2,7 @@ import { writeSync } from "node:fs";
 import { Command } from "commander";
 import type { EngineCommand } from "./commands/execute.js";
 import { execute } from "./commands/execute.js";
-import { locateRun, noRunFound, readStepArg } from "./commands/shared.js";
+import { locateRun, noRunFound } from "./commands/shared.js";
 import { drive } from "./drive.js";
 import { driveConfigTemplate } from "./drive-config.js";
 import type { HandlerResult } from "./envelope.js";
@@ -19,6 +19,9 @@ function emit(result: HandlerResult, asJson: boolean): void {
   process.stdout.write(
     asJson ? `${JSON.stringify(result.envelope, null, 2)}\n` : `${result.human}\n`,
   );
+  if (!asJson && !result.envelope.ok) {
+    for (const error of result.envelope.errors) process.stdout.write(`${error}\n`);
+  }
   process.exitCode = result.code;
 }
 async function inRun(opts: CliOpts, command: (run: string) => EngineCommand): Promise<void> {
@@ -29,7 +32,7 @@ async function inRun(opts: CliOpts, command: (run: string) => EngineCommand): Pr
 function common(command: Command): Command {
   return command
     .option("--root <dir>", "run root directory (overrides DR_ROOT and cwd)")
-    .option("--json", "emit the stable envelope {ok, run, step, errors[], data}");
+    .option("--json", "emit the stable envelope {ok, run, step, errors[]}");
 }
 export function buildProgram(): Command {
   const program = new Command()
@@ -131,30 +134,22 @@ export function buildProgram(): Command {
   common(
     program
       .command("next")
-      .description("Describe the takeable caller step, or execute automatic fetch/finalize"),
+      .description("Name the single takeable step with its prompt and output location"),
   ).action(async (opts: CliOpts) => inRun(opts, (run) => ({ kind: "next", run })));
   common(
     program
       .command("fulfill")
       .description("Validate <file>; advance when complete (verdicts accept partial batches)")
-      .argument("<step>")
-      .argument("<file>"),
-  ).action(async (raw: string, file: string, opts: CliOpts) => {
-    const step = readStepArg(raw);
-    if (!step) {
-      emit(
-        fail(1, null, null, [`E103: unknown step ${raw}; usage: dr fulfill <step> <file>`]),
-        opts.json === true,
-      );
-      return;
-    }
-    await inRun(opts, (run) => ({ kind: "fulfill", run, step, file }));
-  });
+      .argument("<step>", "pipeline step to fulfill")
+      .argument("<file>", "file holding the step output"),
+  ).action(async (step: string, file: string, opts: CliOpts) =>
+    inRun(opts, (run) => ({ kind: "fulfill", run, step, file })),
+  );
   common(
     program
       .command("citations")
-      .description("Return a citation export joined from claims, matrix and fetch ledger")
-      .option("--format <fmt>", "output format: json"),
+      .description("Structured citation export for the run (join of claims, matrix, fetch ledger)")
+      .option("--format <fmt>", "output format: json (default)"),
   ).action(async (opts: CliOpts & { format?: string }) =>
     inRun(opts, (run) => ({ kind: "citations", run, format: opts.format })),
   );
@@ -162,19 +157,19 @@ export function buildProgram(): Command {
     program
       .command("retry-fetch")
       .description(
-        "Retry non-ok URLs through scraper; keep ok pages (DR_FETCH_TIER=plain for plain first)",
+        "Retry non-ok URLs through scraper; keeps ok pages (DR_FETCH_TIER=plain for plain first)",
       ),
   ).action(async (opts: CliOpts) => inRun(opts, (run) => ({ kind: "retry-fetch", run })));
   common(
     program
       .command("status")
-      .description("Return current step, completed steps and coverage counts"),
+      .description("Run summary: current step, steps completed, coverage counts"),
   ).action(async (opts: CliOpts) => inRun(opts, (run) => ({ kind: "status", run })));
   common(
     program
       .command("help")
-      .description("Return pipeline overview or per-step detail")
-      .argument("[step]"),
+      .description("Pipeline overview, or per-step detail")
+      .argument("[step]", "pipeline step"),
   ).action(async (step: string | undefined, opts: CliOpts) =>
     emit(
       await execute({ kind: "help", run: locateRun(resolveRoot({ rootFlag: opts.root })), step }),

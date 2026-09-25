@@ -283,6 +283,7 @@ describe("prose pipeline", () => {
     const done = runJson(["next"]);
     expect(done.code).toBe(0);
     expect(done.env.step).toBe("done");
+    expect(done.env.data).toMatchObject({ gate: "passed", sources: "sources.md" });
     expect(fs.existsSync(path.join(runDir, "sources.md"))).toBe(true);
     expect(fs.existsSync(path.join(runDir, "citations.json"))).toBe(true);
     // dr citations reads the same export from the closed run.
@@ -419,6 +420,55 @@ describe("verdict quote gate", () => {
 });
 
 describe("envelope and help", () => {
+  it("keeps human error lines and resolves the run before rejecting unknown steps", () => {
+    const missing = run(["fulfill", "bogus", "missing.json"]);
+    expect(missing.out).toContain("\nE102: no run found");
+    const created = runJson(["new", "Compatibility"]);
+    const runDir = created.env.run ?? "";
+    const unknown = runJson(["fulfill", "bogus", "missing.json"]);
+    expect(unknown.env).toMatchObject({
+      run: runDir,
+      step: null,
+      errors: ["E103: unknown step bogus; usage: dr fulfill <step> <file>"],
+    });
+    const rows = fs
+      .readFileSync(runLayout(runDir).eventsFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows.slice(-2)).toMatchObject([
+      { cmd: "fulfill", event: "start" },
+      { cmd: "fulfill", event: "end", exitCode: 1, errors: unknown.env.errors },
+    ]);
+    const wrong = run(["fulfill", "claims", "missing.json"]);
+    expect(wrong.out).toBe(
+      "Step claims is not takeable now. The takeable step is brief.\nE202: step claims is not takeable; the takeable step is brief\n",
+    );
+    const file = write("empty.md", "");
+    const validation = runJson(["fulfill", "brief", file]);
+    const human = run(["fulfill", "brief", file]);
+    for (const error of validation.env.errors) expect(human.out).toContain(`\n${error}\n`);
+  });
+
+  it("preserves non-drive help descriptions", () => {
+    const descriptions = {
+      next: "Name the single takeable step with its prompt and output location",
+      citations: "Structured citation export for the run (join of claims, matrix, fetch ledger)",
+      "retry-fetch":
+        "Retry non-ok URLs through scraper; keeps ok pages (DR_FETCH_TIER=plain for plain first)",
+      status: "Run summary: current step, steps completed, coverage counts",
+      help: "Pipeline overview, or per-step detail",
+    };
+    for (const [command, text] of Object.entries(descriptions)) {
+      const help = run([command, "--help"]).out;
+      expect(help.replace(/\s+/g, " ")).toContain(text);
+      expect(help).toContain("emit the stable envelope {ok, run, step, errors[]}");
+    }
+    const fulfill = run(["fulfill", "--help"]).out;
+    expect(fulfill).toContain("pipeline step to fulfill");
+    expect(fulfill).toContain("file holding the step output");
+    expect(run(["help", "--help"]).out).toContain("pipeline step");
+  });
   it("emits the stable envelope on every command", () => {
     const created = runJson(["new", "Topic"]);
     expect(created.env.ok).toBe(true);

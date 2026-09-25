@@ -41,7 +41,7 @@ const doneSchema = z.object({
 });
 export type WorkOutcome =
   | { readonly kind: "result"; readonly text: string }
-  | { readonly kind: "privacy"; readonly reason: string }
+  | { readonly kind: "canceled" }
   | { readonly kind: "unavailable" | "stopped"; readonly failure: z.infer<typeof failureSchema> }
   | {
       readonly kind: "question";
@@ -247,23 +247,16 @@ export function hcnArguments(route: Route, directory: string, secret: boolean): 
   ];
 }
 
-/** Parent owns files and cancellation. No shell, no native passthrough and no
- * retry with weaker containment when hcn refuses a flag. */
+/** Parent owns files, launch admission and cancellation. The scheduler checks
+ * local identity before recording an attempt, then calls this spawn boundary.
+ * No shell, native passthrough or retry with weaker containment. */
 export async function runHcn(
   route: Route,
   directory: string,
   secret: boolean,
   signal: AbortSignal,
 ): Promise<WorkOutcome> {
-  if (secret) {
-    const refused = await validateLocalRoutes([route]);
-    if (refused) return { kind: "privacy", reason: refused };
-  }
-  if (signal.aborted)
-    return {
-      kind: "stopped",
-      failure: { class: "task", retryable: false, message: "parent canceled work" },
-    };
+  if (signal.aborted) return { kind: "canceled" };
   const stdout = openSync(`${directory}/hcn.jsonl`, "wx", 0o600);
   const stderr = openSync(`${directory}/hcn.stderr`, "wx", 0o600);
   return new Promise((resolve) => {
@@ -323,15 +316,16 @@ export async function runHcn(
       closeSync(stdout);
       closeSync(stderr);
       if (storageFailed) resolve({ kind: "internal", reason: "cannot persist hcn diagnostics" });
-      else if (signal.aborted || overflow)
+      else if (overflow)
         resolve({
           kind: "stopped",
           failure: {
             class: "task",
             retryable: false,
-            message: overflow ? "hcn output exceeds 64 MiB limit" : "parent canceled work",
+            message: "hcn output exceeds 64 MiB limit",
           },
         });
+      else if (signal.aborted) resolve({ kind: "canceled" });
       else if (spawnFailed)
         resolve({
           kind: "internal",
