@@ -10,8 +10,8 @@ import { advanceState, loadStateOrFail, notTakeable } from "./shared.js";
 
 /** Execute the finalize CLI step: run the report structure gate, generate
  *  sources.md from claims.json, and close the run at done. A failed gate
- *  lists violations, names synthesis as the fixing step, exits 2, and
- *  does not advance. */
+ *  lists violations, names report.md as the in-place repair surface, exits 2,
+ *  and does not advance. */
 export function cmdFinalize(runDir: string): HandlerResult {
   const loaded = loadStateOrFail(runDir, null);
   if ("result" in loaded) return loaded.result;
@@ -27,9 +27,10 @@ export function cmdFinalize(runDir: string): HandlerResult {
       "finalize",
       [
         `E207: report.md is missing or unreadable: ${errorMessage(error)}; ` +
-          `fix at synthesis, then run dr next`,
+          `edit report.md in place, then run dr next`,
       ],
-      `report.md is missing or unreadable (${errorMessage(error)}). Fix at synthesis, then run dr next.`,
+      `report.md is missing or unreadable (${errorMessage(error)}). Edit report.md in place, then run dr next.`,
+      finalizeRecovery(runDir),
     );
   }
   let matrix: Matrix;
@@ -45,14 +46,15 @@ export function cmdFinalize(runDir: string): HandlerResult {
   const violations = gateReport(report, matrix);
   if (violations.length > 0) {
     const errors = violations.map(
-      (violation) => `E207: ${violation.message} (fix at ${violation.fixableAt})`,
+      (violation) => `E207: ${violation.message} (edit report.md in place; then dr next)`,
     );
     return fail(
       2,
       runDir,
       "finalize",
       errors,
-      `Final gate failed:\n${violations.map((v) => `- ${v.message} (fix at ${v.fixableAt})`).join("\n")}\nRun does not advance.`,
+      `Final gate failed:\n${violations.map((v) => `- ${v.message}`).join("\n")}\nEdit report.md in place, then run dr next. Run does not advance.`,
+      finalizeRecovery(runDir),
     );
   }
   const layout = runLayout(runDir);
@@ -71,5 +73,25 @@ export function cmdFinalize(runDir: string): HandlerResult {
     `Final gate passed. Run done.\n` +
     `Report: ${layout.reportFile}\n` +
     `Sources: ${layout.sourcesFile}`;
-  return ok(runDir, "done", human, { gate: "passed", sources: "sources.md" });
+  return doneResult(runDir, human);
+}
+
+/** Shared terminal result, including idempotent drive resume at done. */
+export function doneResult(runDir: string, human = "Run done."): HandlerResult {
+  const layout = runLayout(runDir);
+  return ok(runDir, "done", human, {
+    gate: "passed",
+    report: layout.reportFile,
+    coverage: readMatrixFile(runDir).coverage,
+    citations: layout.citationsFile,
+    sources: "sources.md",
+  });
+}
+
+function finalizeRecovery(runDir: string): Record<string, unknown> {
+  return {
+    artifact: runLayout(runDir).reportFile,
+    state: runLayout(runDir).stateFile,
+    repair: `dr next --root ${JSON.stringify(runDir)} --json`,
+  };
 }

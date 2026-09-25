@@ -12,7 +12,9 @@ function pipelineOverview(): string {
     "the CLI holds state, validates, and gates.\n\n" +
     "Pipeline (linear, exactly one takeable step at a time):\n" +
     `${lines.join("\n")}\n\n` +
-    "Commands: dr new <topic> [--root <dir>] | dr next | dr fulfill <step> <file> | " +
+    "Drivers: use the agent loop for sessions; dr drive for non-agent callers (human shell, cron, tools).\n" +
+    "Drive config and recovery: dr drive --help; template: dr drive --print-config.\n" +
+    "Commands: dr new <topic> [--root <dir>] [--min-distinct-citations <n>] | dr drive <topic> [--config <file>] | dr next | dr fulfill <step> <file> | " +
     "dr citations [--format json] | dr retry-fetch | dr status | dr help [<step>]\n" +
     "Every command accepts --json (envelope {ok, run, step, errors[]}). " +
     "Exit codes: 0 ok, 1 usage, 2 gate/validation, 3 nothing takeable, 4 internal."

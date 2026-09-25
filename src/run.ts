@@ -48,7 +48,7 @@ export function createRunDir(root: string, topic: string, now: Date = new Date()
   for (;;) {
     const candidate = suffix === 2 ? base : `${base}-${suffix}`;
     try {
-      fs.mkdirSync(path.join(root, candidate), { recursive: false });
+      fs.mkdirSync(path.join(root, candidate), { recursive: false, mode: 0o700 });
       return path.join(root, candidate);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;

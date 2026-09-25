@@ -4,16 +4,27 @@ import { fail, type HandlerResult, ok } from "../envelope.js";
 import { writePrompts } from "../prompts.js";
 import { resolveRoot } from "../run.js";
 import { createRunDirectory, runLayout } from "../rundir.js";
-import { initialState, type RunState, readState, writeState } from "../state.js";
+import {
+  initialState,
+  type RunPolicy,
+  type RunState,
+  readState,
+  runPolicySchema,
+  writeState,
+} from "../state.js";
 import { isStepName, nextStep, type StepName } from "../steps.js";
 import { errorMessage } from "../util.js";
 
 export interface NewOptions {
   readonly topic: string;
+  readonly policy?: RunPolicy;
   readonly rootFlag?: string | undefined;
 }
 
-export function cmdNew(options: NewOptions): HandlerResult {
+export function cmdNew(options: NewOptions, onCreated?: (runDir: string) => void): HandlerResult {
+  if (options.policy && !runPolicySchema.safeParse(options.policy).success) {
+    return fail(1, null, null, ["E106: min-distinct-citations must be a positive integer"]);
+  }
   const topic = options.topic.trim();
   if (topic.length === 0) {
     return fail(1, null, null, [
@@ -26,14 +37,18 @@ export function cmdNew(options: NewOptions): HandlerResult {
   } catch (error) {
     return fail(1, null, null, [`E101: cannot use root ${root}: ${errorMessage(error)}`]);
   }
-  let runDir: string;
+  let runDir: string | null = null;
   try {
     runDir = createRunDirectory(root, topic);
+    onCreated?.(runDir);
     writePrompts(runDir, topic);
     const created = new Date().toISOString();
-    writeState(runDir, initialState(topic, created, "brief"));
+    writeState(runDir, {
+      ...initialState(topic, created, "brief"),
+      ...(options.policy ? { policy: options.policy } : {}),
+    });
   } catch (error) {
-    return fail(4, null, null, [`E401: failed to create run: ${errorMessage(error)}`]);
+    return fail(4, runDir, null, [`E401: failed to create run: ${errorMessage(error)}`]);
   }
   const human =
     `Created run ${runDir}\n` +

@@ -10,6 +10,11 @@ export interface RunLayout {
   readonly runDir: string;
   /** claims.json -> steps/claims.json symlink at the run root. */
   readonly claimsFile: string;
+  readonly mutationFile: string;
+  readonly driveDir: string;
+  readonly driveConfigFile: string;
+  readonly driveJournalFile: string;
+  driveAttempt(workId: string, attempt: number): string;
   /** citations.json written at finalize. */
   readonly citationsFile: string;
   /** Per-run command event stream: one JSON line per command start/end. */
@@ -33,6 +38,13 @@ export function runLayout(runDir: string): RunLayout {
   const stepsDir = path.join(runDir, "steps");
   return {
     claimsFile: path.join(runDir, "claims.json"),
+    mutationFile: path.join(stateDir, "mutation.json"),
+    driveDir: path.join(stateDir, "drive"),
+    driveConfigFile: path.join(stateDir, "drive", "config.json"),
+    driveJournalFile: path.join(stateDir, "drive", "journal.json"),
+    driveAttempt(workId, attempt) {
+      return path.join(stateDir, "drive", workId, String(attempt));
+    },
     citationsFile: path.join(runDir, "citations.json"),
     eventsFile: path.join(stateDir, "events.jsonl"),
     fetched(name) {

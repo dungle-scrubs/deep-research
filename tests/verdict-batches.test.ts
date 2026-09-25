@@ -327,6 +327,32 @@ describe("incremental verdict fulfillment", () => {
     });
   });
 
+  it("keeps a corrected stale pair resolved across later batches", () => {
+    const layout = fixture();
+    // Mark A temporarily uncheckable so a quoteless supported entry is valid.
+    writeLedger(
+      layout.runDir,
+      readLedger(layout.runDir).map((entry) => ({
+        ...entry,
+        status: entry.normalized === URL_A ? "unreachable" : entry.status,
+      })),
+    );
+    expect(fulfill("verdicts", [{ claimId: "c001", url: URL_A, verdict: "supported" }]).code).toBe(
+      0,
+    );
+    writeLedger(
+      layout.runDir,
+      readLedger(layout.runDir).map((entry) => ({ ...entry, status: "ok" })),
+    );
+    expect(fulfill("verdicts", [supported(URL_A)]).code).toBe(0);
+    const later = fulfill("verdicts", [
+      supported(URL_B),
+      { claimId: "c002", url: URL_A, verdict: "not-found" },
+    ]);
+    expect(later.code, later.envelope.errors.join()).toBe(0);
+    expect(later.envelope.step).toBe("briefing");
+  });
+
   it("retries an uncommitted batch after projection I/O failure without losing accepted entries", () => {
     const layout = fixture();
     expect(fulfill("verdicts", [supported(URL_A)]).code).toBe(0);

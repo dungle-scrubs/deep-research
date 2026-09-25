@@ -8,9 +8,15 @@ import { verdictsFileSchema } from "./verdicts.js";
 
 const stepSchema = z.enum(STEP_ORDER);
 
+export const runPolicySchema = z
+  .object({ minDistinctCitations: z.number().int().positive() })
+  .strict();
+export type RunPolicy = Readonly<z.infer<typeof runPolicySchema>>;
+
 const runStateSchema = z.object({
   completed: z.array(stepSchema),
   created: z.string(),
+  policy: runPolicySchema.optional(),
   step: z.union([stepSchema, z.literal("done")]),
   topic: z.string(),
   // Commit accepted batches and the step transition together. Missing history
