@@ -16,7 +16,7 @@ import { fail } from "./envelope.js";
 import type { RunEvent } from "./events.js";
 import { appendRunEvent, endEvent, eventContext, followEvents, startEvent } from "./events.js";
 import { readLedger } from "./fetch.js";
-import { runHcn, validateLaunchConfig } from "./hcn.js";
+import { runHcn, validateLaunchConfig, validateLocalRoutes } from "./hcn.js";
 import { readClaimsFile, readMatrixFile } from "./report.js";
 import { resolveRoot } from "./run.js";
 import { runLayout } from "./rundir.js";
@@ -279,7 +279,7 @@ export async function drive(options: DriveOptions): Promise<HandlerResult> {
             work,
           );
         const prior = work.attempts.at(-1);
-        if (prior && prior.outcome !== "unavailable") {
+        if (prior && prior.outcome !== "unavailable" && prior.outcome !== "canceled") {
           if (
             prior.outcome === "result" &&
             prior.candidate &&
@@ -303,13 +303,29 @@ export async function drive(options: DriveOptions): Promise<HandlerResult> {
           );
         }
         const chain = routeChain(config.steps[work.step]);
-        while (work.attempts.length < chain.length) {
+        // Only provider unavailability advances the frozen route chain.
+        // Parent cancellation consumes a slot but retries the same route.
+        let routeIndex = work.attempts.filter(
+          (attempt) => attempt.outcome === "unavailable",
+        ).length;
+        while (routeIndex < chain.length) {
           if (work.attempts.length >= config.limits.maxAttemptsPerWorkItem)
             return stop(dir, "E209", "fixed attempt cap reached", work);
           if (abort.signal.aborted) return stop(dir, "E208", "parent canceled work", work);
           tail?.drain();
-          const route = chain[work.attempts.length];
+          const route = chain[routeIndex];
           if (!route) return stop(dir, "E401", "missing configured route", work);
+          // Local identity can change after preflight. Refusal is admission
+          // failure, not an attempt, and must precede the durable start.
+          if (config.privacy === "secret") {
+            const refused = await validateLocalRoutes([route]);
+            if (refused)
+              return fail(1, dir, readState(dir).step, [`E109: ${refused}`], undefined, {
+                ...recovery(dir),
+                workId: work.id,
+              });
+          }
+          if (abort.signal.aborted) return stop(dir, "E208", "parent canceled work", work);
           const number = work.attempts.length + 1;
           const directory = layout.driveAttempt(work.id, number);
           mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -328,7 +344,7 @@ export async function drive(options: DriveOptions): Promise<HandlerResult> {
           appendRunEvent(dir, startEvent(context));
           tail?.drain();
           const outcome = await runHcn(route, directory, config.privacy === "secret", abort.signal);
-          attempt.outcome = outcome.kind === "privacy" ? "stopped" : outcome.kind;
+          attempt.outcome = outcome.kind;
           if (outcome.kind === "result") {
             attempt.candidate = path.join(directory, "candidate");
             attempt.candidateHash = digest(outcome.text);
@@ -336,8 +352,8 @@ export async function drive(options: DriveOptions): Promise<HandlerResult> {
           } else if (outcome.kind === "question") {
             attempt.question = outcome.question;
             attempt.sessionId = outcome.sessionId;
-          } else if (outcome.kind === "privacy") attempt.failureClass = "E109";
-          else if (outcome.kind !== "internal") attempt.failureClass = outcome.failure.class;
+          } else if (outcome.kind !== "internal" && outcome.kind !== "canceled")
+            attempt.failureClass = outcome.failure.class;
           save(); // A conclusive result is durable before any fulfill.
           appendRunEvent(
             dir,
@@ -347,23 +363,21 @@ export async function drive(options: DriveOptions): Promise<HandlerResult> {
               outcome.kind === "result",
               [],
               readState(dir).step,
-              outcome.kind === "internal" || outcome.kind === "privacy" ? "stopped" : outcome.kind,
+              outcome.kind === "internal" ? "stopped" : outcome.kind,
             ),
           );
           tail?.drain();
-          if (outcome.kind === "privacy")
-            return fail(1, dir, readState(dir).step, [`E109: ${outcome.reason}`], undefined, {
-              ...recovery(dir),
-              workId: work.id,
-            });
           if (outcome.kind === "result" && attempt.candidate) return attempt.candidate;
           if (outcome.kind !== "unavailable")
             return stop(
               dir,
               outcome.kind === "internal" ? "E401" : "E208",
-              `worker ${outcome.kind}; inspect private attempt diagnostics and repair before resume`,
+              outcome.kind === "canceled"
+                ? "worker canceled by parent; resume to retry within the fixed attempt cap"
+                : `worker ${outcome.kind}; inspect private attempt diagnostics and repair before resume`,
               work,
             );
+          routeIndex += 1;
         }
         return stop(dir, "E208", "frozen route chain exhausted", work);
       };
@@ -438,12 +452,24 @@ export async function drive(options: DriveOptions): Promise<HandlerResult> {
           if (!accepted.envelope.ok) return accepted;
           continue;
         }
-        if (activeJournal.recovery === "started")
-          return stop(
-            dir,
-            "E208",
-            "fetch recovery was interrupted; inspect ledger and repair before resume",
+        if (activeJournal.recovery === "started") {
+          const ledger = new Map(readLedger(dir).map((entry) => [entry.normalized, entry]));
+          const remaining = readClaimsFile(dir).some((claim) =>
+            claim.citations.some((citation) => {
+              const entry = ledger.get(normalizeUrl(citation.url));
+              return entry?.tier !== "scraper" && entry?.status !== "ok";
+            }),
           );
+          if (remaining && !state.verdictBatches?.length) {
+            activeJournal.recovery = "pending";
+          } else {
+            activeJournal.recovery = "done";
+            activeJournal.recoveryNote = state.verdictBatches?.length
+              ? "fetch recovery skipped: verdict batches already accepted"
+              : "fetch recovery skipped: no untried scraper acquisitions remain";
+          }
+          save();
+        }
         if (activeJournal.recovery === "pending" && !state.verdictBatches?.length) {
           activeJournal.recovery = "started";
           save();
@@ -561,37 +587,37 @@ export async function drive(options: DriveOptions): Promise<HandlerResult> {
       }
     } catch (error) {
       abort.abort();
+      const message = errorMessage(error);
       return fail(
-        4,
+        message.startsWith("E108:") ? 1 : 4,
         run,
         observedStep(run),
-        [`E401: drive stopped: ${errorMessage(error)}`],
+        [/^E(?:108|401):/.test(message) ? message : `E401: drive stopped: ${message}`],
         undefined,
         run ? recovery(run) : undefined,
       );
     }
   })();
   options.signal?.removeEventListener("abort", cancel);
-  let cleanupFailure: unknown;
-  try {
-    tail?.close();
-  } catch (error) {
-    cleanupFailure = error;
+  const cleanupErrors: string[] = [];
+  for (const cleanup of [() => tail?.close(), () => release?.()]) {
+    try {
+      cleanup();
+    } catch (error) {
+      cleanupErrors.push(`E401: drive cleanup/progress failed: ${errorMessage(error)}`);
+    }
   }
-  try {
-    release?.();
-  } catch (error) {
-    cleanupFailure ??= error;
-  }
-  if (cleanupFailure)
-    return fail(
-      4,
-      run,
-      observedStep(run),
-      [`E401: drive cleanup/progress failed: ${errorMessage(cleanupFailure)}`],
-      undefined,
-      run ? { ...recovery(run), committed: true } : undefined,
-    );
+  // Cleanup is secondary evidence, not a replacement for a gate or done
+  // result. Only the engine's post-commit failure may assert committed.
+  if (cleanupErrors.length)
+    return {
+      ...result,
+      human: `${result.human}\n${cleanupErrors.join("\n")}`,
+      envelope: {
+        ...result.envelope,
+        data: { ...result.envelope.data, cleanupErrors },
+      },
+    };
   return result;
 }
 

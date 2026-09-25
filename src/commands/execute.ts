@@ -6,7 +6,6 @@ import type { EventContext } from "../events.js";
 import { appendRunEvent, endEvent, eventContext, startEvent } from "../events.js";
 import { runLayout } from "../rundir.js";
 import { readState } from "../state.js";
-import type { StepName } from "../steps.js";
 import { isStepName } from "../steps.js";
 import { errorMessage } from "../util.js";
 import { cmdCitations } from "./citations.js";
@@ -16,7 +15,7 @@ import { cmdFulfill } from "./fulfill.js";
 import { cmdHelp } from "./help.js";
 import { cmdNext } from "./next.js";
 import type { NewOptions } from "./shared.js";
-import { cmdNew } from "./shared.js";
+import { cmdNew, readStepArg } from "./shared.js";
 import { cmdStatus } from "./status.js";
 
 export type EngineCommand =
@@ -25,7 +24,7 @@ export type EngineCommand =
   | {
       readonly kind: "fulfill";
       readonly run: string;
-      readonly step: StepName;
+      readonly step: string;
       readonly file: string;
     }
   | { readonly kind: "retry-fetch"; readonly run: string; readonly onlyUntriedScraper?: boolean }
@@ -89,7 +88,7 @@ export async function execute(
     }
     const step =
       command.kind === "fulfill"
-        ? command.step
+        ? readStepArg(command.step)
         : command.kind === "help"
           ? command.step && isStepName(command.step)
             ? command.step
@@ -130,9 +129,19 @@ export async function execute(
               : cmdNext(command.run);
         break;
       }
-      case "fulfill":
-        result = cmdFulfill({ runDir: command.run, step: command.step, file: command.file });
+      case "fulfill": {
+        const step = readStepArg(command.step);
+        result = step
+          ? cmdFulfill({ runDir: command.run, step, file: command.file })
+          : fail(
+              1,
+              command.run,
+              null,
+              [`E103: unknown step ${command.step}; usage: dr fulfill <step> <file>`],
+              `Unknown step: ${command.step}.`,
+            );
         break;
+      }
       case "retry-fetch":
         result = await cmdRetryFetch(command.run, command.onlyUntriedScraper);
         break;
@@ -159,7 +168,7 @@ export async function execute(
         : after === "done" && mutating
           ? "done"
           : command.kind === "fulfill"
-            ? after === command.step
+            ? after === context.step
               ? "partial"
               : "accepted"
             : (command.kind === "next" && context.step !== after) ||

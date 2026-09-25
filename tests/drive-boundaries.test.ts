@@ -1,9 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as commands from "../src/commands/execute.js";
 import { acquireMutation, execute } from "../src/commands/execute.js";
 import { drive } from "../src/drive.js";
 import { driveConfigSchema, driveConfigTemplate, readDriveConfig } from "../src/drive-config.js";
+import { fail } from "../src/envelope.js";
 import * as events from "../src/events.js";
 import { fetchAll, writeLedger } from "../src/fetch.js";
 import * as hcn from "../src/hcn.js";
@@ -75,6 +77,35 @@ async function atClaims(run: string) {
     expect((await fulfill(run, step, value)).code).toBe(0);
   }
 }
+async function atVerdicts(): Promise<string> {
+  const run = await newRun(2);
+  await atClaims(run);
+  expect(
+    (
+      await fulfill(
+        run,
+        "claims",
+        [1, 2].map((n) => ({
+          id: `c00${n}`,
+          statement: "Fixture fact",
+          tier: 3,
+          citations: ["http://127.0.0.1/a", "http://127.0.0.1/b"].map((url) => ({
+            url,
+            title: "Fixture",
+            locator: "p1",
+          })),
+        })),
+      )
+    ).code,
+  ).toBe(0);
+  expect((await execute({ kind: "next", run })).code).toBe(0);
+  fs.mkdirSync(runLayout(run).driveDir, { recursive: true });
+  const value = config();
+  value.verdicts.claimsPerBatch = 1;
+  fs.writeFileSync(runLayout(run).driveConfigFile, JSON.stringify(value));
+  return run;
+}
+
 beforeEach(() => {
   fs.mkdirSync(path.resolve(".scratch/tests/drive-boundaries"), { recursive: true });
   root = fs.mkdtempSync(path.resolve(".scratch/tests/drive-boundaries/test-"));
@@ -299,6 +330,256 @@ describe("progress and hcn protocol boundaries", () => {
 });
 
 describe("durable scheduler", () => {
+  it("retries recovery after an engine failure rather than stranding the started flag", async () => {
+    const run = await atVerdicts();
+    const original = commands.execute;
+    let recoveries = 0;
+    vi.spyOn(commands, "execute").mockImplementation(async (command, options) => {
+      if (command.kind === "retry-fetch" && ++recoveries === 1)
+        return fail(4, run, "verdicts", ["E401: fixture persistence failure"]);
+      return original(command, options);
+    });
+    vi.spyOn(hcn, "runHcn").mockResolvedValue({
+      kind: "stopped",
+      failure: { class: "task", retryable: false, message: "stop after recovery" },
+    });
+    expect((await drive({ resume: run })).envelope.errors).toEqual([
+      "E401: fixture persistence failure",
+    ]);
+    expect((await drive({ resume: run })).envelope.errors.join()).toContain("worker stopped");
+    expect(recoveries).toBe(2);
+    expect(JSON.parse(fs.readFileSync(runLayout(run).driveJournalFile, "utf8")).recovery).toBe(
+      "done",
+    );
+  });
+
+  it("resumes a sibling canceled by lane failure without replaying manually repaired pairs", async () => {
+    const run = await atVerdicts();
+    const launch = vi
+      .spyOn(hcn, "runHcn")
+      .mockImplementation(async (_route, directory, _secret, signal) => {
+        const prompt = fs.readFileSync(path.join(directory, "prompt.txt"), "utf8");
+        const input = JSON.parse(prompt.split("DR_INPUT_JSON\n")[1] ?? "{}");
+        if (input.assignment.pairs[0].claimId === "c001")
+          return {
+            kind: "stopped",
+            failure: { class: "task", retryable: false, message: "lane failed" },
+          };
+        return new Promise((resolve) =>
+          signal.addEventListener("abort", () => resolve({ kind: "canceled" }), { once: true }),
+        );
+      });
+    expect((await drive({ resume: run })).code).toBe(2);
+    expect(
+      (
+        await execute({
+          kind: "fulfill",
+          run,
+          step: "verdicts",
+          file: write(
+            "repair.json",
+            ["http://127.0.0.1/a", "http://127.0.0.1/b"].map((url) => ({
+              claimId: "c001",
+              url,
+              verdict: "not-found",
+            })),
+          ),
+        })
+      ).code,
+    ).toBe(0);
+    launch.mockImplementation(async (_route, directory) => {
+      const prompt = fs.readFileSync(path.join(directory, "prompt.txt"), "utf8");
+      if (!prompt.includes("DR_STEP: verdicts"))
+        return {
+          kind: "stopped",
+          failure: { class: "task", retryable: false, message: "stop at briefing" },
+        };
+      const input = JSON.parse(prompt.split("DR_INPUT_JSON\n")[1] ?? "{}");
+      expect(input.assignment.pairs.map((pair: { claimId: string }) => pair.claimId)).toEqual([
+        "c002",
+        "c002",
+      ]);
+      return {
+        kind: "result",
+        text: JSON.stringify(
+          input.assignment.pairs.map((pair: object) => ({ ...pair, verdict: "not-found" })),
+        ),
+      };
+    });
+    expect((await drive({ resume: run })).envelope.step).toBe("briefing");
+    const journal = JSON.parse(fs.readFileSync(runLayout(run).driveJournalFile, "utf8"));
+    expect(
+      journal.work
+        .filter((work: { step: string }) => work.step === "verdicts")
+        .map((work: { attempts: { number: number }[] }) =>
+          work.attempts.map((attempt) => attempt.number),
+        ),
+    ).toEqual([[1], [1, 2]]);
+  });
+
+  it.each(["gate", "done", "pre-commit"])(
+    "preserves the %s result when cleanup fails",
+    async (scenario) => {
+      vi.spyOn(hcn, "runHcn").mockResolvedValue({ kind: "result", text: "invalid" });
+      const stopped = await drive({
+        topic: "Fixture",
+        root,
+        config: write("config.json", config()),
+      });
+      const run = stopped.envelope.run ?? "";
+      const layout = runLayout(run);
+      if (scenario === "done") {
+        fs.writeFileSync(layout.stateFile, JSON.stringify({ ...readState(run), step: "done" }));
+        fs.writeFileSync(
+          layout.matrixFile,
+          JSON.stringify({ coverage: { tier3: { unreachable: 1 } } }),
+        );
+      } else if (scenario === "pre-commit") {
+        fs.writeFileSync(layout.mutationFile, JSON.stringify({ token: "stale", pid: 99999999 }));
+      }
+      const resetGate = (): void => {
+        if (scenario !== "gate") return;
+        const journal = JSON.parse(fs.readFileSync(layout.driveJournalFile, "utf8"));
+        fs.writeFileSync(layout.driveJournalFile, JSON.stringify({ ...journal, work: [] }));
+      };
+      resetGate();
+      const expected = await drive({ resume: run });
+      if (scenario === "gate") expect(expected.envelope.errors[0]).toMatch(/^E205:/);
+      resetGate();
+      const follow = events.followEvents;
+      vi.spyOn(events, "followEvents").mockImplementation((...args) => {
+        const tail = follow(...args);
+        return {
+          ...tail,
+          close() {
+            tail.close();
+            throw new Error("fixture cleanup failure");
+          },
+        };
+      });
+      const result = await drive({ resume: run });
+      expect(result.code).toBe(expected.code);
+      expect(result.envelope).toMatchObject(expected.envelope);
+      expect(result.envelope.data?.cleanupErrors).toEqual([
+        "E401: drive cleanup/progress failed: fixture cleanup failure",
+      ]);
+      expect(result.envelope.data?.committed).toBeUndefined();
+    },
+  );
+
+  it("keeps a real post-commit failure and both cleanup diagnostics", async () => {
+    const append = events.appendRunEvent;
+    vi.spyOn(events, "appendRunEvent").mockImplementation((run, event) => {
+      if (event.cmd === "fulfill" && event.step === "brief" && event.event === "end")
+        throw new Error("fixture post-commit event failure");
+      append(run, event);
+    });
+    const follow = events.followEvents;
+    vi.spyOn(events, "followEvents").mockImplementation((...args) => {
+      const tail = follow(...args);
+      return {
+        ...tail,
+        close() {
+          tail.close();
+          throw new Error("fixture close failure");
+        },
+      };
+    });
+    const acquire = commands.acquireMutation;
+    vi.spyOn(commands, "acquireMutation").mockImplementation((run) => {
+      const lease = acquire(run);
+      return {
+        token: lease.token,
+        release() {
+          lease.release();
+          throw new Error("fixture release failure");
+        },
+      };
+    });
+    const result = await drive({ topic: "Fixture", root, config: write("config.json", config()) });
+    expect(result.code).toBe(4);
+    expect(result.envelope).toMatchObject({
+      step: "foundation",
+      errors: ["E401: end event not saved: fixture post-commit event failure"],
+      data: {
+        committed: true,
+        cleanupErrors: [
+          "E401: drive cleanup/progress failed: fixture close failure",
+          "E401: drive cleanup/progress failed: fixture release failure",
+        ],
+      },
+    });
+    expect(readState(result.envelope.run ?? "").step).toBe("foundation");
+    expect(fs.existsSync(runLayout(result.envelope.run ?? "").mutationFile)).toBe(false);
+  });
+
+  it("surfaces journal E108 and stale-lease E401 without relabeling", async () => {
+    vi.spyOn(hcn, "runHcn").mockResolvedValue({
+      kind: "stopped",
+      failure: { class: "task", retryable: false, message: "pause" },
+    });
+    const initial = await drive({ topic: "Fixture", root, config: write("config.json", config()) });
+    const run = initial.envelope.run ?? "";
+    const layout = runLayout(run);
+    const journal = JSON.parse(fs.readFileSync(layout.driveJournalFile, "utf8"));
+    fs.writeFileSync(
+      layout.driveJournalFile,
+      JSON.stringify({ ...journal, configHash: "mismatch" }),
+    );
+    const mismatch = await drive({ resume: run });
+    expect(mismatch.code).toBe(1);
+    expect(mismatch.envelope.errors).toEqual([
+      "E108: frozen config differs from the recorded work plan",
+    ]);
+    fs.writeFileSync(layout.mutationFile, JSON.stringify({ token: "stale", pid: 99999999 }));
+    const leased = await drive({ resume: run });
+    expect(leased.code).toBe(4);
+    expect(leased.envelope.errors[0]).toMatch(/^E401: mutation ownership unavailable:/);
+    expect(leased.envelope.errors[0]?.match(/E401/g)).toHaveLength(1);
+  });
+
+  it("rechecks secret routes before counting an attempt or emitting a work start, including resume", async () => {
+    const value = config();
+    value.privacy = "secret";
+    for (const choice of Object.values(value.steps))
+      if ("selection" in choice) {
+        choice.query.privacy = "secret";
+        choice.selection.hosted = false;
+      }
+    // Synthetic metadata only. No credential store or live model is used.
+    vi.spyOn(hcn, "validateLaunchConfig").mockResolvedValue(null);
+    const recheck = vi.spyOn(hcn, "validateLocalRoutes").mockResolvedValue("identity changed");
+    const launch = vi
+      .spyOn(hcn, "runHcn")
+      .mockResolvedValue({ kind: "internal", reason: "should not launch" });
+    const initial = await drive({ topic: "Fixture", root, config: write("secret.json", value) });
+    const run = initial.envelope.run ?? "";
+    for (const result of [initial, await drive({ resume: run })]) {
+      expect(result.code).toBe(1);
+      expect(result.envelope.errors).toEqual(["E109: identity changed"]);
+    }
+    expect(launch).not.toHaveBeenCalled();
+    const journal = JSON.parse(fs.readFileSync(runLayout(run).driveJournalFile, "utf8"));
+    expect(journal.work[0].attempts).toEqual([]);
+    const rows = fs
+      .readFileSync(runLayout(run).eventsFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(rows.filter((row) => row.scope === "work")).toEqual([]);
+    recheck.mockResolvedValue(null);
+    launch.mockResolvedValue({
+      kind: "unavailable",
+      failure: { class: "quota", retryable: true, message: "fixture stop" },
+    });
+    expect((await drive({ resume: run })).code).toBe(2);
+    expect(launch).toHaveBeenCalledTimes(1);
+    const admitted = JSON.parse(fs.readFileSync(runLayout(run).driveJournalFile, "utf8"));
+    expect(admitted.work[0].attempts.map((attempt: { number: number }) => attempt.number)).toEqual([
+      1,
+    ]);
+  });
+
   it("reuses a persisted clean result after interruption before fulfill, without another launch", async () => {
     const value = config();
     const file = write("config.json", value);

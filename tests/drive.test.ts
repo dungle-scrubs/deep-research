@@ -90,6 +90,27 @@ afterEach(() => {
 });
 
 describe("drive CLI", () => {
+  it("prints envelope error lines in human drive output too", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        DR,
+        "drive",
+        "Invalid fixture",
+        "--root",
+        root,
+        "--config",
+        write("config.json", config("invalid")),
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${root}/bin:${process.env.PATH}` },
+      },
+    );
+    expect(result.status).toBe(2);
+    expect(result.stdout).toMatch(/\nE205: foundation:/);
+  });
   it("matches manual canonical artifacts and engine events under equal inputs and policy", () => {
     const driven = start();
     expect(driven.code).toBe(0);
@@ -169,8 +190,10 @@ describe("drive CLI", () => {
     );
   });
 
-  it("streams a worker start before completion and cancels its owned process", async () => {
-    const file = write("wait.json", config("wait"));
+  it.each([1, 3])("resumes parent-canceled work in the next slot within cap %i", async (cap) => {
+    const value = config("wait-once", "wait-once");
+    value.limits.maxAttemptsPerWorkItem = cap;
+    const file = write("wait.json", value);
     const child = spawn(
       process.execPath,
       [DR, "drive", "Waiting fixture", "--root", root, "--config", file, "--json"],
@@ -208,8 +231,73 @@ describe("drive CLI", () => {
     const run = result.run ?? "";
     expect(fs.existsSync(path.join(run, "state/mutation.json"))).toBe(false);
     const before = events(run).filter((event) => event.scope === "work").length;
-    expect(cli(["drive", "--resume", run]).code).toBe(2);
-    expect(events(run).filter((event) => event.scope === "work")).toHaveLength(before);
+    const resumed = cli(["drive", "--resume", run]);
+    const starts = events(run).filter(
+      (event) => event.scope === "work" && event.step === "foundation" && event.event === "start",
+    );
+    if (cap === 1) {
+      expect(resumed.envelope.errors[0]).toMatch(/^E209:/);
+      expect(events(run).filter((event) => event.scope === "work")).toHaveLength(before);
+    } else {
+      expect(resumed.code, JSON.stringify(resumed.envelope)).toBe(0);
+      expect(starts.map((event) => event.attempt)).toEqual([1, 2]);
+      expect(starts.map((event) => event.route)).toEqual(["wait-once@pi", "wait-once@pi"]);
+    }
+  });
+
+  it.each(["start", "end"])("resumes after a hard kill at recovery %s", (stage) => {
+    const hook = path.resolve(__dirname, "fixtures/kill-recovery.mjs");
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        hook,
+        DR,
+        "drive",
+        "Interrupted recovery",
+        "--root",
+        root,
+        "--config",
+        write("config.json", config()),
+        "--json",
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${root}/bin:${process.env.PATH}`,
+          DR_TEST_KILL_RECOVERY: stage,
+        },
+      },
+    );
+    expect(result.signal).toBe("SIGKILL");
+    const run = fs
+      .readdirSync(root)
+      .map((name) => path.join(root, name))
+      .find((dir) => fs.existsSync(runLayout(dir).stateFile));
+    if (!run) throw new Error("no interrupted run");
+    const layout = runLayout(run);
+    expect(JSON.parse(fs.readFileSync(layout.driveJournalFile, "utf8")).recovery).toBe("started");
+    // The child has exited and this fixture owns its lease. Emulate the
+    // documented operator repair, never have drive steal a stale lease.
+    expect(JSON.parse(fs.readFileSync(layout.mutationFile, "utf8")).pid).toBe(result.pid);
+    expect(() => process.kill(result.pid, 0)).toThrow();
+    fs.unlinkSync(layout.mutationFile);
+    const before = readLedger(run).map((entry) => entry.attempts);
+    const resumed = cli(["drive", "--resume", run]);
+    expect(resumed.code, JSON.stringify(resumed.envelope)).toBe(0);
+    const journal = JSON.parse(fs.readFileSync(layout.driveJournalFile, "utf8"));
+    expect(journal.recovery).toBe("done");
+    if (stage === "end") {
+      expect(journal.recoveryNote).toContain("recovery skipped");
+      expect(readLedger(run).map((entry) => entry.attempts)).toEqual(before);
+    } else {
+      expect(readLedger(run).map((entry) => entry.attempts)).toEqual(before.map((n) => n + 1));
+    }
+    expect(
+      events(run).filter((event) => event.cmd === "retry-fetch" && event.event === "start"),
+    ).toHaveLength(stage === "start" ? 2 : 1);
   });
 
   it("runs fixtures to done, streams events, and resumes done without work", () => {
@@ -218,6 +306,8 @@ describe("drive CLI", () => {
     expect(result.envelope.step).toBe("done");
     const run = result.envelope.run ?? "";
     expect(result.envelope.data).toMatchObject({
+      gate: "passed",
+      sources: "sources.md",
       report: path.join(run, "report.md"),
       citations: path.join(run, "citations.json"),
       coverage: { tier3: { unreachable: 2 } },
