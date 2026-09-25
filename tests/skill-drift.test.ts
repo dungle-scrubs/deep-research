@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
+import { cmdHelp } from "../src/commands/help.js";
+import { driveConfigTemplate } from "../src/drive-config.js";
 import { STEP_ORDER, STEPS } from "../src/steps.js";
 
 // steps.ts is the source of truth (dr help emits from it). Pin the
@@ -16,6 +18,19 @@ const routing = fs.readFileSync(
 );
 
 describe("skill/binary drift", () => {
+  it("documents the agent loop and drive for non-agent callers without a second routing table", () => {
+    const readme = fs.readFileSync(path.resolve(__dirname, "../README.md"), "utf8");
+    for (const document of [readme, skill, cmdHelp(null).human]) {
+      expect(document).toContain("agent loop");
+      expect(document).toContain("non-agent callers");
+      expect(document).toContain("dr drive --help");
+    }
+    expect(driveConfigTemplate()).toMatchObject({
+      policy: { minDistinctCitations: 2 },
+      limits: { maxAttemptsPerWorkItem: 3, maxWorkItems: 1000 },
+      verdicts: { lanes: 2, claimsPerBatch: 20 },
+    });
+  });
   it("documents the same scraper install command in help, README, and skill", () => {
     const readme = fs.readFileSync(path.resolve(__dirname, "../README.md"), "utf8");
     for (const document of [readme, skill, STEPS.fetch.summary]) {

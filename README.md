@@ -59,7 +59,35 @@ node dist/dr.mjs help gaps
 Runs live in `YYYY-MM-DD-slug/` under the cwd, `--root <dir>`, or
 `DR_ROOT`. Every command takes `--json` (envelope
 `{ok, run, step, errors[]}`). Exits: 0 ok, 1 usage, 2 gate/validation,
-3 nothing takeable, 4 internal.
+3 nothing takeable, 4 internal. Drive also uses exit 1 for config/privacy
+refusals and exit 2 for worker failures or fixed caps.
+
+## Drive for non-agent callers
+
+Use the agent loop above for sessions that make research decisions. A human
+shell, cron job, or another tool can use the one-request driver:
+
+```sh
+dr drive --print-config > research-drive.json
+# Replace every null step with its complete choose-model result.
+dr drive "burnout in early childhood educators" --config research-drive.json --json
+```
+
+`dr drive --help` describes the config. The template uses fixed work/attempt
+caps and a creation policy of 2 distinct documents per claim. Manual runs
+default to 1. Either creation command accepts `--min-distinct-citations <n>`;
+that policy cannot be lowered after creation.
+
+Drive launches hcn child processes, never a model SDK. It keeps the same
+engine gates and artifacts. Stderr streams run events; stdout returns one
+final envelope with report, coverage, citations, and sources pointers.
+Provider unavailability advances the frozen fallback chain. A worker or
+gate failure stops at the recorded step for manual repair.
+
+Read [the drive guide](docs/drive.md) for config fields, privacy, verdict
+lanes, bounded scraper recovery, and interruption repair. Secret configs
+refuse hosted candidates and require confirmed local registry identities;
+tool-free secret search may be unavailable.
 
 ## Scraper fetch tier
 

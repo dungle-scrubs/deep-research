@@ -134,6 +134,8 @@ export interface FetchEngineOptions {
   readonly urls: readonly string[];
   /** Retry mode: re-attempt only ledger entries not ok. Idempotent for ok. */
   readonly retryOnly?: boolean;
+  /** Drive recovery never repeats a recorded scraper acquisition, including failures. */
+  readonly onlyUntriedScraper?: boolean;
   /** Plain first with 403/empty-text fallback, or scraper directly. */
   readonly tier?: FetchTier;
   /** Injectable subprocess boundary; all engine guards still apply. */
@@ -183,6 +185,7 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
   const targets = [...new Set(options.urls.map(normalizeUrl))].filter((normalized) => {
     if (!options.retryOnly) return true;
     const prior = byNormalized.get(normalized);
+    if (options.onlyUntriedScraper && prior?.tier === "scraper") return false;
     return prior === undefined || prior.status !== "ok";
   });
 
