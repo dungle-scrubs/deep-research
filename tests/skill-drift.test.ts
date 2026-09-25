@@ -12,6 +12,12 @@ const skill = fs.readFileSync(
 );
 
 describe("skill/binary drift", () => {
+  it("documents the same scraper install command in help, README, and skill", () => {
+    const readme = fs.readFileSync(path.resolve(__dirname, "../README.md"), "utf8");
+    for (const document of [readme, skill, STEPS.fetch.summary]) {
+      expect(document).toContain("pipx install dungle-scrubs-scraper");
+    }
+  });
   it("keeps the quote contract in the verdict prompt and skill", () => {
     const prompt = fs.readFileSync(
       path.resolve(__dirname, "..", "templates", "verdict.md"),

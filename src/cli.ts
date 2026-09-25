@@ -155,7 +155,9 @@ export function buildProgram(): Command {
 
   program
     .command("retry-fetch")
-    .description("Re-attempt unreachable URLs idempotently; keeps fetched pages")
+    .description(
+      "Retry non-ok URLs through scraper; keeps ok pages (DR_FETCH_TIER=plain for plain first)",
+    )
     .option("--root <dir>", "run root directory (overrides DR_ROOT and cwd)")
     .option("--json", "emit the stable envelope {ok, run, step, errors[]}")
     .action(async (opts: CliOpts) => {

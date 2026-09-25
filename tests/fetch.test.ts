@@ -60,6 +60,16 @@ beforeEach(async () => {
       res.end("<html><body><p>final page</p></body></html>");
       return;
     }
+    if (pathname === "/blocked") {
+      res.writeHead(403);
+      res.end("Access denied");
+      return;
+    }
+    if (pathname === "/empty") {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<html><script>render()</script><body></body></html>");
+      return;
+    }
     if (pathname === "/paywalled") {
       res.writeHead(401, { "content-type": "text/html" });
       res.end("<html><body>subscribe</body></html>");
@@ -108,6 +118,7 @@ describe("fetch engine", () => {
     const entries = await fetchAll({ guard: permissiveGuard, runDir: workdir, urls: [url] });
     const entry = entryFor(entries, url);
     expect(entry?.status).toBe("ok");
+    expect(entry?.tier).toBe("plain");
     expect(entry?.contentType).toContain("text/html");
     expect(entry?.finalUrl).toBe(`${baseUrl}/doc`);
     const hash = urlHash(normalizeUrl(url));
@@ -238,5 +249,202 @@ describe("fetch engine", () => {
     expect(entries).toHaveLength(1);
     expect(hits["/doc?a=1"]).toBe(1);
     expect(fs.existsSync(runLayout(workdir).ledgerFile)).toBe(true);
+  });
+});
+
+describe("scraper tier", () => {
+  it("does not invoke scraper for an ordinary plain page", async () => {
+    let invoked = false;
+    const entries = await fetchAll({
+      guard: permissiveGuard,
+      runDir: workdir,
+      scrapeFn: async () => {
+        invoked = true;
+        return { ok: false, reason: "must not run" };
+      },
+      urls: [`${baseUrl}/doc`],
+    });
+    expect(invoked).toBe(false);
+    expect(entries[0]).toMatchObject({ attempts: 1, status: "ok", tier: "plain" });
+  });
+
+  it("keeps capped UTF-8 text valid without exceeding the byte cap", async () => {
+    const url = `${baseUrl}/doc`;
+    const entries = await fetchAll({
+      guard: permissiveGuard,
+      maxBytes: 6,
+      runDir: workdir,
+      scrapeFn: async () => ({ ok: true, text: "abc€€" }),
+      tier: "scraper",
+      urls: [url],
+    });
+    expect(entries[0]).toMatchObject({ bytes: 6, status: "ok", tier: "scraper" });
+    expect(fs.readFileSync(path.join(workdir, "fetched", `${urlHash(url)}.txt`), "utf8")).toBe(
+      "abc€",
+    );
+    const partial = await fetchAll({
+      guard: permissiveGuard,
+      maxBytes: 5,
+      runDir: workdir,
+      scrapeFn: async () => ({ ok: true, text: "abc€€" }),
+      tier: "scraper",
+      urls: [url],
+    });
+    expect(partial[0]?.bytes).toBe(3);
+    expect(fs.readFileSync(path.join(workdir, "fetched", `${urlHash(url)}.txt`), "utf8")).toBe(
+      "abc",
+    );
+  });
+
+  it.each(["/blocked", "/empty"])(
+    "recovers %s through scraper and records its text and attempt",
+    async (pathname) => {
+      const url = `${baseUrl}${pathname}`;
+      const calls: string[] = [];
+      const entries = await fetchAll({
+        guard: permissiveGuard,
+        runDir: workdir,
+        scrapeFn: async (target) => {
+          calls.push(target);
+          return { ok: true, text: "# Rendered pricing\nPlan costs $12." };
+        },
+        sleep: async () => {},
+        urls: [url],
+      });
+      expect(calls).toEqual([url]);
+      expect(entries[0]).toMatchObject({ attempts: 2, status: "ok", tier: "scraper" });
+      expect(readLedger(workdir)[0]?.tier).toBe("scraper");
+      expect(fs.readFileSync(path.join(workdir, "fetched", `${urlHash(url)}.txt`), "utf8")).toBe(
+        "# Rendered pricing\nPlan costs $12.",
+      );
+    },
+  );
+
+  it("uses scraper directly while keeping robots, SSRF, byte caps, and per-origin pacing", async () => {
+    let clock = 0;
+    const calls: { url: string; at: number }[] = [];
+    const entries = await fetchAll({
+      guard: async (url) =>
+        url.includes("blocked.example")
+          ? { allowed: false, reason: "private address" }
+          : { allowed: true },
+      maxBytes: 16,
+      now: () => new Date(clock),
+      runDir: workdir,
+      scrapeFn: async (url) => {
+        calls.push({ at: clock, url });
+        return { ok: true, text: "Rendered ".repeat(20) };
+      },
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      tier: "scraper",
+      urls: [
+        `${baseUrl}/doc`,
+        `${baseUrl}/target`,
+        `${baseUrl}/private/doc`,
+        "https://blocked.example/doc",
+      ],
+    });
+    expect(calls).toEqual([
+      { at: 0, url: `${baseUrl}/doc` },
+      { at: 1000, url: `${baseUrl}/target` },
+    ]);
+    expect(entries.map((e) => [e.status, e.tier, e.bytes])).toEqual([
+      ["ok", "scraper", 16],
+      ["ok", "scraper", 16],
+      ["robots-blocked", "scraper", 0],
+      ["unreachable", "scraper", 0],
+    ]);
+    expect(hits["/doc"] ?? 0).toBe(0);
+    expect(hits["/robots.txt"]).toBe(1);
+    expect(
+      fs.readFileSync(path.join(workdir, "fetched", `${urlHash(`${baseUrl}/doc`)}.txt`), "utf8"),
+    ).toBe("Rendered Rendere");
+  });
+
+  it("paces fallback after the plain attempt and leaves ordinary failures on plain", async () => {
+    let clock = 0;
+    const times: number[] = [];
+    const entries = await fetchAll({
+      guard: permissiveGuard,
+      now: () => new Date(clock),
+      runDir: workdir,
+      scrapeFn: async () => {
+        times.push(clock);
+        return { ok: false, reason: "scraper unavailable" };
+      },
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      urls: [`${baseUrl}/blocked`, `${baseUrl}/gone`, `${baseUrl}/paywalled`],
+    });
+    expect(times).toEqual([1000]);
+    expect(entries.map((e) => [e.status, e.tier, e.attempts])).toEqual([
+      ["unreachable", "scraper", 2],
+      ["unreachable", "plain", 1],
+      ["paywalled", "plain", 1],
+    ]);
+    expect(entries[0]?.reason).toContain("scraper unavailable");
+  });
+
+  it("retries non-ok entries with scraper, keeps ok entries, and counts each attempt", async () => {
+    const urls = [`${baseUrl}/doc`, `${baseUrl}/gone`];
+    await fetchAll({ guard: permissiveGuard, runDir: workdir, sleep: async () => {}, urls });
+    const calls: string[] = [];
+    const options = {
+      guard: permissiveGuard,
+      retryOnly: true,
+      runDir: workdir,
+      scrapeFn: async (url: string) => {
+        calls.push(url);
+        return { ok: true as const, text: "Recovered document" };
+      },
+      tier: "scraper" as const,
+      urls,
+    };
+    const entries = await fetchAll(options);
+    expect(entries.map((e) => [e.status, e.tier, e.attempts])).toEqual([
+      ["ok", "plain", 1],
+      ["ok", "scraper", 2],
+    ]);
+    expect(await fetchAll(options)).toEqual(entries);
+    expect(calls).toEqual([`${baseUrl}/gone`]);
+  });
+
+  it("does not leave stale text when a later attempt fails", async () => {
+    const url = `${baseUrl}/doc`;
+    await fetchAll({ guard: permissiveGuard, runDir: workdir, urls: [url] });
+    await fetchAll({
+      guard: permissiveGuard,
+      runDir: workdir,
+      scrapeFn: async () => ({ ok: false, reason: "failed" }),
+      tier: "scraper",
+      urls: [url],
+    });
+    expect(fs.existsSync(path.join(workdir, "fetched", `${urlHash(url)}.txt`))).toBe(false);
+  });
+
+  it("reads pre-tier ledger entries as plain", () => {
+    const layout = runLayout(workdir);
+    fs.mkdirSync(layout.stateDir, { recursive: true });
+    fs.writeFileSync(
+      layout.ledgerFile,
+      JSON.stringify([
+        {
+          attempts: 1,
+          bytes: 12,
+          contentType: "text/html",
+          fetchedAt: "2026-01-01",
+          finalUrl: null,
+          hash: "h",
+          normalized: "https://example.com/",
+          reason: null,
+          status: "ok",
+          url: "https://example.com/",
+        },
+      ]),
+    );
+    expect(readLedger(workdir)[0]?.tier).toBe("plain");
   });
 });

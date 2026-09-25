@@ -2,7 +2,10 @@ import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
+import { z } from "zod";
 import { runLayout } from "./rundir.js";
+import type { ScrapeResult } from "./scraper.js";
+import { scrapePage } from "./scraper.js";
 import { type GuardVerdict, guardUrl } from "./ssrf.js";
 import { normalizeUrl, urlHash } from "./url.js";
 
@@ -10,31 +13,31 @@ export const MAX_BYTES = 5 * 1024 * 1024;
 export const TIMEOUT_MS = 15_000;
 export const MAX_PARALLEL_ORIGINS = 6;
 
-export type FetchStatus =
-  | "ok"
-  | "unreachable"
-  | "paywalled"
-  | "binary-unreadable"
-  | "robots-blocked";
+const ledgerEntrySchema = z.object({
+  attempts: z.number(),
+  bytes: z.number(),
+  contentType: z.string().nullable(),
+  fetchedAt: z.string(),
+  finalUrl: z.string().nullable(),
+  hash: z.string(),
+  normalized: z.string(),
+  reason: z.string().nullable(),
+  status: z.enum(["ok", "unreachable", "paywalled", "binary-unreadable", "robots-blocked"]),
+  // Older runs predate the scraper tier and contain only plain fetches.
+  tier: z.enum(["plain", "scraper"]).default("plain"),
+  url: z.string(),
+});
 
-export interface LedgerEntry {
-  readonly url: string;
-  readonly normalized: string;
-  readonly hash: string;
-  readonly status: FetchStatus;
-  readonly finalUrl: string | null;
-  readonly contentType: string | null;
-  readonly bytes: number;
-  readonly reason: string | null;
-  readonly fetchedAt: string;
-  readonly attempts: number;
-}
+export type LedgerEntry = Readonly<z.infer<typeof ledgerEntrySchema>>;
+export type FetchStatus = LedgerEntry["status"];
+export type FetchTier = LedgerEntry["tier"];
 
 export function readLedger(runDir: string): LedgerEntry[] {
   try {
     const raw = fs.readFileSync(runLayout(runDir).ledgerFile, "utf8");
     const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as LedgerEntry[]) : [];
+    const result = z.array(ledgerEntrySchema).safeParse(parsed);
+    return result.success ? result.data : [];
   } catch {
     return [];
   }
@@ -131,6 +134,10 @@ export interface FetchEngineOptions {
   readonly urls: readonly string[];
   /** Retry mode: re-attempt only ledger entries not ok. Idempotent for ok. */
   readonly retryOnly?: boolean;
+  /** Plain first with 403/empty-text fallback, or scraper directly. */
+  readonly tier?: FetchTier;
+  /** Injectable subprocess boundary; all engine guards still apply. */
+  readonly scrapeFn?: (url: string, maxBytes: number, timeoutMs: number) => Promise<ScrapeResult>;
   /** Injectable for tests; production uses the real SSRF guard. */
   readonly guard?: (url: string) => Promise<GuardVerdict>;
   /** Injectable clock/sleep for tests. */
@@ -159,12 +166,15 @@ async function respectRateLimit(
   clock.lastHit.set(origin, now().getTime());
 }
 
-/** Fetch every unique normalized URL once, write fetched/<hash>.raw and
- *  .txt, and record every outcome in the ledger. Never throws: every
- *  failure is an outcome. */
+/** Fetch each unique normalized URL, optionally escalating from plain to
+ *  scraper, and store the final tier's evidence and outcome. Network and
+ *  subprocess failures are ledger outcomes; persistence errors may throw. */
 export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry[]> {
   const guard = options.guard ?? guardUrl;
   const fetchFn = options.fetchFn ?? fetch;
+  const scrapeFn = options.scrapeFn ?? scrapePage;
+  const maxBytes = options.maxBytes ?? MAX_BYTES;
+  const tier = options.tier ?? "plain";
   const sleep = options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const now = options.now ?? (() => new Date());
   const previous = readLedger(options.runDir);
@@ -187,12 +197,59 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
     const prior = byNormalized.get(normalized);
     const attempts = (prior?.attempts ?? 0) + 1;
     const target = new URL(normalized);
+    const origin = target.origin;
     const base = {
       hash: urlHash(normalized),
       normalized,
       url: prior?.url ?? normalized,
       attempts,
       fetchedAt: now().toISOString(),
+      tier,
+    };
+
+    // A replacement attempt must not leave text from an older tier available
+    // to the verdict gate. These files belong to this normalized URL alone.
+    for (const extension of ["raw", "txt"]) {
+      fs.rmSync(path.join(fetchedDir, `${base.hash}.${extension}`), { force: true });
+    }
+
+    const runScraper = async (fallback: boolean): Promise<LedgerEntry> => {
+      const scraperBase = {
+        ...base,
+        attempts: attempts + (fallback ? 1 : 0),
+        bytes: 0,
+        contentType: null,
+        fetchedAt: now().toISOString(),
+        // scraper's `url` echoes the input, not a verified final redirect URL.
+        finalUrl: null,
+        tier: "scraper" as const,
+      };
+      try {
+        if (fallback) await respectRateLimit(origin, clock, sleep, now);
+        const result = await scrapeFn(normalized, maxBytes, TIMEOUT_MS);
+        if (!result.ok) {
+          return { ...scraperBase, reason: result.reason, status: "unreachable" };
+        }
+        // Decode without an incomplete trailing UTF-8 sequence, which would
+        // expand to a replacement character and could exceed the byte cap.
+        const decoder = new TextDecoder();
+        const raw = Buffer.from(result.text).subarray(0, maxBytes);
+        const text = decoder.decode(raw, { stream: true });
+        if (text.trim().length === 0) {
+          return { ...scraperBase, reason: "scraper returned empty text", status: "unreachable" };
+        }
+        const buffer = Buffer.from(text);
+        writeDoc(fetchedDir, base.hash, buffer, text);
+        return {
+          ...scraperBase,
+          bytes: buffer.byteLength,
+          contentType: "text/markdown; charset=utf-8",
+          reason: null,
+          status: "ok",
+        };
+      } catch {
+        return { ...scraperBase, reason: "scraper failed", status: "unreachable" };
+      }
     };
 
     let verdict = guardCache.get(target.origin);
@@ -211,7 +268,6 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
       };
     }
 
-    const origin = target.origin;
     let disallowList: string[] = [];
     try {
       disallowList = await robotsDisallows(origin, robotsCache, fetchFn);
@@ -232,14 +288,20 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
 
     await respectRateLimit(origin, clock, sleep, now);
 
+    if (tier === "scraper") return runScraper(false);
+
     try {
       const response = await fetchFn(normalized, {
         redirect: "follow",
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
       const contentType = response.headers.get("content-type");
+      if (response.status === 403) {
+        await response.body?.cancel();
+        return runScraper(true);
+      }
       if (response.status === 401 || response.status === 402) {
-        const body = Buffer.from(await response.arrayBuffer());
+        const body = await readCapped(response, maxBytes);
         writeDoc(fetchedDir, base.hash, body, null);
         return {
           ...base,
@@ -260,9 +322,11 @@ export async function fetchAll(options: FetchEngineOptions): Promise<LedgerEntry
           status: "unreachable",
         };
       }
-      const buffer = await readCapped(response, options.maxBytes ?? MAX_BYTES);
+      const buffer = await readCapped(response, maxBytes);
       const isPdf = (contentType ?? "").toLowerCase().includes("application/pdf");
-      writeDoc(fetchedDir, base.hash, buffer, isPdf ? null : extractText(buffer.toString("utf8")));
+      const text = isPdf ? null : extractText(buffer.toString("utf8"));
+      if (text === "") return runScraper(true);
+      writeDoc(fetchedDir, base.hash, buffer, text);
       if (isPdf) {
         const rawPath = path.join(fetchedDir, `${base.hash}.raw`);
         const text = await pdfText(rawPath);
