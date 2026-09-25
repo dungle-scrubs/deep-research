@@ -3,11 +3,15 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { STEP_ORDER, STEPS } from "../src/steps.js";
 
-// The skill file and the binary share the per-step intelligence table.
-// steps.ts is the source of truth (dr help emits from it); this test
-// fails when the skill copy drifts.
+// steps.ts is the source of truth (dr help emits from it). Pin the
+// in-session checklist in SKILL.md and the routing table in routing.md
+// to each step, so text in a different row cannot hide a missing entry.
 const skill = fs.readFileSync(
   path.resolve(__dirname, "..", "skills", "deep-research", "SKILL.md"),
+  "utf8",
+);
+const routing = fs.readFileSync(
+  path.resolve(__dirname, "..", "skills", "deep-research", "routing.md"),
   "utf8",
 );
 
@@ -38,12 +42,26 @@ describe("skill/binary drift", () => {
     }
   });
 
+  it("links routing callers and secret-material runs to the routing document", () => {
+    expect(skill).toMatch(
+      /Routing callers, or any caller handling secret material:.*\[routing\.md\]\(routing\.md\)/,
+    );
+  });
+
   for (const step of STEP_ORDER) {
     const meta = STEPS[step];
-    if (meta.modelQuery === null) continue; // not in the skill's table by design
-    it(`${step}: skill carries the binary's query and plain line`, () => {
-      expect(skill).toContain(meta.modelQuery);
-      expect(skill).toContain(meta.plainLine.split("\n")[0] ?? meta.plainLine);
+    if (meta.modelQuery === null) continue; // caller-authored/CLI-only steps have no routing row
+    it(`${step}: skill carries the binary's plain line without routing queries`, () => {
+      const rows = skill.split("\n").filter((line) => line.startsWith(`| ${step} |`));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toContain(meta.plainLine);
+      expect(skill).not.toContain(meta.modelQuery);
+    });
+    it(`${step}: routing carries the binary's query and plain line`, () => {
+      const rows = routing.split("\n").filter((line) => line.startsWith(`| ${step} |`));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toContain(meta.modelQuery);
+      expect(rows[0]).toContain(meta.plainLine);
     });
   }
 });
