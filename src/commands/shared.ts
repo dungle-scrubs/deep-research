@@ -112,11 +112,9 @@ export function notTakeable(runDir: string, want: string, actual: string): Handl
 /** Persist the advance to the next step after completing `completed`. */
 export function advanceState(runDir: string, state: RunState, completed: StepName): void {
   writeState(runDir, {
+    ...state,
     completed: [...state.completed, completed],
-    created: state.created,
     step: nextStep(completed),
-    topic: state.topic,
-    version: 1,
   });
 }
 

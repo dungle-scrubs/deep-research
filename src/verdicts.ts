@@ -8,7 +8,13 @@ import { runLayout } from "./rundir.js";
 import { normalizeUrl, urlHash } from "./url.js";
 import { formatZodIssues, parseJsonText } from "./util.js";
 
-export const verdictValueSchema = z.enum(["supported", "partial", "not-found", "contradicts"]);
+export const verdictValueSchema = z.enum([
+  "supported",
+  "partial",
+  "not-found",
+  "contradicts",
+  "skipped",
+]);
 
 export const verdictEntrySchema = z.union([
   z.object({
@@ -37,7 +43,8 @@ export type ClaimStatus =
   | "misrepresented"
   | "not-found"
   | "conflict"
-  | "unreachable";
+  | "unreachable"
+  | "skipped";
 
 export interface CitationRow {
   readonly claimId: string;
@@ -171,11 +178,19 @@ function containsQuote(page: string, quote: string): boolean {
   return false;
 }
 
-function quoteIssues(entries: readonly VerdictEntry[], runDir: string): VerdictIssue[] {
+/** Check one batch for quote grounding. historicalBatch is null for the
+ *  incoming batch (plain index paths) and the 1-based batch number when
+ *  rechecking an accepted batch after a ledger change. Each hit carries its
+ *  entry so callers can match history against resubmissions without parsing. */
+function quoteIssues(
+  entries: readonly VerdictEntry[],
+  runDir: string,
+  historicalBatch: number | null,
+): { readonly entry: VerdictEntry; readonly issue: VerdictIssue }[] {
   const ledger = new Map(readLedger(runDir).map((entry) => [entry.normalized, entry]));
   // Many claims can cite one page. Normalize and read each document only once.
   const pages = new Map<string, string | null>();
-  const issues: VerdictIssue[] = [];
+  const issues: { readonly entry: VerdictEntry; readonly issue: VerdictIssue }[] = [];
   entries.forEach((entry, index) => {
     if ("conflict" in entry || entry.verdict !== "supported") return;
     const normalized = normalizeUrl(entry.url);
@@ -183,8 +198,14 @@ function quoteIssues(entries: readonly VerdictEntry[], runDir: string): VerdictI
     if (skipsQuoteCheck(fetched?.status ?? null)) return;
     const reject = (message: string): void => {
       issues.push({
-        message: `${entry.claimId} on ${entry.url}: ${message}`,
-        path: `${index}.quote`,
+        entry,
+        issue: {
+          message: `${entry.claimId} on ${entry.url}: ${message}`,
+          path:
+            historicalBatch === null
+              ? `${index}.quote`
+              : `batch ${historicalBatch}[${index}].quote`,
+        },
       });
     };
     if (entry.quote === undefined) {
@@ -222,12 +243,13 @@ function quoteIssues(entries: readonly VerdictEntry[], runDir: string): VerdictI
   return issues;
 }
 
-/** Validate the verdict file against claims + fetched evidence. Returns
- *  formatted issues; empty means the file can drive derivation. */
+/** Validate one batch against claims, previously accepted batches, and
+ *  fetched evidence. Only incoming supported entries need quote checks. */
 export function validateVerdicts(
   raw: string,
   claims: ClaimsFile,
   runDir: string,
+  batches: readonly (readonly VerdictEntry[])[] = [],
 ): { entries: VerdictEntry[]; issues: VerdictIssue[] } {
   const { parsed, error } = parseJsonText(raw);
   if (error !== null) {
@@ -252,8 +274,30 @@ export function validateVerdicts(
       new Set(claim.citations.map((citation) => normalizeUrl(citation.url))),
     );
   }
-  const seenPairs = new Set<string>();
-  const conflictsFor = new Set<string>();
+  // Pair identity is shared by duplicate rejection, completion, and derivation.
+  // Batch indexes are 1-based, including the incoming batch.
+  const batchIndex = batches.length + 1;
+  const seenPairs = new Map<string, number>();
+  const conflictsFor = new Map<string, number>();
+  // A pair whose latest accepted entry fails the live ledger check is stale:
+  // retry-fetch made its document checkable after acceptance. Only a stale
+  // pair can be re-fulfilled; the new entry supersedes for derivation.
+  // Staleness is per pair: one stale pair does not reopen its batch mates.
+  const latestAccepted = new Map<string, VerdictEntry>();
+  batches.forEach((batch, index) => {
+    for (const entry of batch) {
+      if ("conflict" in entry) conflictsFor.set(entry.claimId, index + 1);
+      else {
+        const key = pairKey(entry.claimId, entry.url);
+        seenPairs.set(key, index + 1);
+        latestAccepted.set(key, entry);
+      }
+    }
+  });
+  const stalePairs = new Set<string>();
+  for (const [key, entry] of latestAccepted) {
+    if (quoteIssues([entry], runDir, null).length > 0) stalePairs.add(key);
+  }
   entries.forEach((entry, index) => {
     const knownCitations = citationsByClaim.get(entry.claimId);
     if (knownCitations === undefined) {
@@ -261,10 +305,15 @@ export function validateVerdicts(
       return;
     }
     if ("conflict" in entry) {
-      if (conflictsFor.has(entry.claimId)) {
-        issues.push({ message: `duplicate conflict entry for ${entry.claimId}`, path: `${index}` });
+      const previous = conflictsFor.get(entry.claimId);
+      if (previous !== undefined) {
+        issues.push({
+          message: `batch ${batchIndex}: duplicate conflict entry for ${entry.claimId}; first supplied in batch ${previous}`,
+          path: `${index}`,
+        });
+      } else {
+        conflictsFor.set(entry.claimId, batchIndex);
       }
-      conflictsFor.add(entry.claimId);
       return;
     }
     const normalized = normalizeUrl(entry.url);
@@ -274,18 +323,63 @@ export function validateVerdicts(
         path: `${index}.url`,
       });
     }
-    const pairKey = `${entry.claimId}|${normalized}`;
-    if (seenPairs.has(pairKey)) {
+    const key = pairKey(entry.claimId, normalized);
+    const previous = seenPairs.get(key);
+    if (previous !== undefined && !stalePairs.has(key)) {
       issues.push({
-        message: `duplicate verdict for ${entry.claimId} on ${entry.url}`,
+        message: `batch ${batchIndex}: duplicate verdict for ${entry.claimId} on ${entry.url}; first supplied in batch ${previous}`,
         path: `${index}`,
       });
+    } else {
+      seenPairs.set(key, batchIndex);
+      stalePairs.delete(key);
     }
-    seenPairs.add(pairKey);
   });
   // Invalid claim/citation pairs are fixed before grounding their evidence.
-  if (issues.length === 0) issues.push(...quoteIssues(entries, runDir));
+  // The aggregate is rechecked every batch: retry-fetch can flip a ledger
+  // status between batches, and a quoteless supported entry accepted while
+  // exempt must not count once its document is checkable. Historical
+  // violations carry their batch index so the caller knows which pair to fix.
+  if (issues.length === 0) {
+    issues.push(...quoteIssues(entries, runDir, null).map((issue) => issue.issue));
+    // Pairs resubmitted in this batch carry their own fix; history blocks
+    // only the stale pairs the batch leaves unaddressed.
+    const resubmitted = new Set<string>();
+    for (const entry of entries) {
+      if (!("conflict" in entry)) resubmitted.add(pairKey(entry.claimId, entry.url));
+    }
+    batches.forEach((prior, batch) => {
+      for (const stale of quoteIssues(prior, runDir, batch + 1)) {
+        if (
+          !("conflict" in stale.entry) &&
+          resubmitted.has(pairKey(stale.entry.claimId, stale.entry.url))
+        ) {
+          continue;
+        }
+        issues.push({
+          message: `${stale.issue.message} (retry-fetch changed the ledger; re-fulfill the pair with a quote)`,
+          path: stale.issue.path,
+        });
+      }
+    });
+  }
   return { entries, issues };
+}
+
+function pairKey(claimId: string, url: string): string {
+  return `${claimId}|${normalizeUrl(url)}`;
+}
+
+/** Conflict markers describe a claim but cannot resolve any citation pair. */
+export function unresolvedPairs(claims: ClaimsFile, entries: readonly VerdictEntry[]): number {
+  const pending = new Set<string>();
+  for (const claim of claims) {
+    for (const citation of claim.citations) pending.add(pairKey(claim.id, citation.url));
+  }
+  for (const entry of entries) {
+    if (!("conflict" in entry)) pending.delete(pairKey(entry.claimId, entry.url));
+  }
+  return pending.size;
 }
 
 /** Derive every claim status. Deterministic: same claims + verdicts +
@@ -305,7 +399,7 @@ export function deriveMatrix(
   const conflictClaims = new Set<string>();
   for (const entry of entries) {
     if ("conflict" in entry) conflictClaims.add(entry.claimId);
-    else verdictFor.set(`${entry.claimId}|${normalizeUrl(entry.url)}`, entry.verdict);
+    else verdictFor.set(pairKey(entry.claimId, entry.url), entry.verdict);
   }
 
   const matrixClaims: MatrixClaim[] = claims.map((claim) => {
@@ -321,7 +415,7 @@ export function deriveMatrix(
         normalized,
         reachable,
         url: citation.url,
-        verdict: verdictFor.get(`${claim.id}|${normalized}`) ?? null,
+        verdict: verdictFor.get(pairKey(claim.id, normalized)) ?? null,
       };
     });
     return {
@@ -343,6 +437,9 @@ export function deriveMatrix(
   const caveats: string[] = [];
   for (const claim of matrixClaims) {
     for (const row of claim.citations) {
+      if (row.verdict === "skipped") {
+        caveats.push(`${claim.id}: citation ${row.url} is skipped; source-not-checked`);
+      }
       if (!row.reachable) {
         caveats.push(
           `${claim.id}: citation ${row.url} is ${row.ledgerStatus ?? "not-fetched"}; source-not-checked`,
@@ -368,6 +465,7 @@ function statusFor(rows: readonly CitationRow[], conflict: boolean): ClaimStatus
   if (supportedDocuments.size >= 2) return "verified";
   if (supportedDocuments.size === 1) return "single-source";
   if (anyContradicts) return "misrepresented";
+  if (rows.some((row) => row.verdict === "skipped")) return "skipped";
   if (!anyReachable && rows.length > 0) return "unreachable";
   return "not-found";
 }

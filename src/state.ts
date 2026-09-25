@@ -4,6 +4,7 @@ import { z } from "zod";
 import { runLayout } from "./rundir.js";
 import { STEP_ORDER, type StepName } from "./steps.js";
 import { formatZodIssues, parseJsonText } from "./util.js";
+import { verdictsFileSchema } from "./verdicts.js";
 
 const stepSchema = z.enum(STEP_ORDER);
 
@@ -12,19 +13,15 @@ const runStateSchema = z.object({
   created: z.string(),
   step: z.union([stepSchema, z.literal("done")]),
   topic: z.string(),
+  // Commit accepted batches and the step transition together. Missing history
+  // identifies an existing run that has not fulfilled an incremental batch.
+  verdictBatches: z.array(verdictsFileSchema).optional(),
   version: z.literal(1),
 });
 
-export interface RunState {
-  readonly version: 1;
-  readonly topic: string;
-  readonly created: string;
-  readonly step: StepName | "done";
-  readonly completed: readonly StepName[];
-}
+export type RunState = Readonly<z.infer<typeof runStateSchema>>;
 
-/** Parse state.json with the Zod schema (the schema is the type source).
- *  refine checks that need isStepName narrow the parsed value after. */
+/** Parse persisted run state and accepted batch history at the boundary. */
 export function readState(runDir: string): RunState {
   const raw = fs.readFileSync(runLayout(runDir).stateFile, "utf8");
   const { parsed, error } = parseJsonText(raw);
@@ -39,13 +36,7 @@ export function readState(runDir: string): RunState {
 
 export function writeState(runDir: string, state: RunState): void {
   const layout = runLayout(runDir);
-  runStateSchema.parse({
-    completed: [...state.completed],
-    created: state.created,
-    step: state.step,
-    topic: state.topic,
-    version: state.version,
-  });
+  runStateSchema.parse(state);
   fs.mkdirSync(layout.stateDir, { recursive: true });
   const tmp = path.join(layout.stateDir, `state.json.tmp.${process.pid}`);
   fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
