@@ -12,6 +12,26 @@ const skill = fs.readFileSync(
 );
 
 describe("skill/binary drift", () => {
+  it("keeps the quote contract in the verdict prompt and skill", () => {
+    const prompt = fs.readFileSync(
+      path.resolve(__dirname, "..", "templates", "verdict.md"),
+      "utf8",
+    );
+    for (const document of [prompt, skill]) {
+      expect(document).toContain("`quote`");
+      expect(document).toContain("at least 16");
+      expect(document).toContain("contiguous substring");
+      expect(document).toContain("tokens");
+      expect(document).toContain("order");
+      expect(document).toContain("three times");
+      expect(document.toLowerCase()).toContain("gaps");
+      expect(document).toContain("entailment");
+      for (const status of ["unreachable", "robots-blocked", "paywalled", "binary-unreadable"]) {
+        expect(document).toContain(`\`${status}\``);
+      }
+    }
+  });
+
   for (const step of STEP_ORDER) {
     const meta = STEPS[step];
     if (meta.modelQuery === null) continue; // not in the skill's table by design

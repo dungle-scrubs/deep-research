@@ -66,7 +66,20 @@ The brief step is caller-authored writing; no model required.
 
 The rule behind the local-fit column: local models are safe where the
 CLI's gates catch the errors (schema, structure, coverage) and unsafe
-where errors are silent (verdicts). Local endpoints serve one
+where judgment errors can remain silent (verdict entailment). A `supported`
+verdict must include a `quote` copied from the fetched text, separate from
+the unchecked citation `locator`. The CLI requires at least 16 characters
+after casefolding, stripping punctuation, and collapsing whitespace. It
+accepts a contiguous substring or all whitespace-separated quote tokens in
+order inside a window of at most three times the quote token count, with small
+gaps allowed and no reuse of a token occurrence. The gate
+skips `unreachable`, `robots-blocked`, `paywalled`, and `binary-unreadable`
+documents; they never count toward support. Other verdicts and conflict
+entries need no quote. Fix E205 quote violations in the verdicts file and
+fulfill again. Presence is checked, entailment is still your judgment;
+the audit pattern and untrusted-content warning still apply.
+
+Local endpoints serve one
 generation at a time - you buy cost with lane width, not speed, so
 batch the volume steps.
 
