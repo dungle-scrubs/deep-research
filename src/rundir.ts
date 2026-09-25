@@ -13,6 +13,7 @@ export interface RunLayout {
   readonly mutationFile: string;
   readonly driveDir: string;
   readonly driveConfigFile: string;
+  readonly driveDiagnosticsFile: string;
   readonly driveJournalFile: string;
   driveAttempt(workId: string, attempt: number): string;
   /** citations.json written at finalize. */
@@ -41,6 +42,9 @@ export function runLayout(runDir: string): RunLayout {
     mutationFile: path.join(stateDir, "mutation.json"),
     driveDir: path.join(stateDir, "drive"),
     driveConfigFile: path.join(stateDir, "drive", "config.json"),
+    /** Full-detail drive result for the caller to read deliberately.
+     *  Secret stdout carries only the outcome; this file carries the why. */
+    driveDiagnosticsFile: path.join(stateDir, "drive", "diagnostics.json"),
     driveJournalFile: path.join(stateDir, "drive", "journal.json"),
     driveAttempt(workId, attempt) {
       return path.join(stateDir, "drive", workId, String(attempt));

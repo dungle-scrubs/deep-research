@@ -19,6 +19,10 @@ export interface NewOptions {
   readonly topic: string;
   readonly policy?: RunPolicy;
   readonly rootFlag?: string | undefined;
+  /** False names the directory without the topic slug (secret drive
+   *  runs). The topic is still recorded inside the run; only the
+   *  stdout-visible path is content-free. */
+  readonly nameTopic?: boolean;
 }
 
 export function cmdNew(options: NewOptions, onCreated?: (runDir: string) => void): HandlerResult {
@@ -39,7 +43,9 @@ export function cmdNew(options: NewOptions, onCreated?: (runDir: string) => void
   }
   let runDir: string | null = null;
   try {
-    runDir = createRunDirectory(root, topic);
+    // A content-free directory name keeps the topic out of any logged run
+    // reference. The topic is still recorded inside the run.
+    runDir = createRunDirectory(root, options.nameTopic === false ? "run" : topic);
     onCreated?.(runDir);
     writePrompts(runDir, topic);
     const created = new Date().toISOString();

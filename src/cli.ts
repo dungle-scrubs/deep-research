@@ -3,12 +3,13 @@ import { Command } from "commander";
 import type { EngineCommand } from "./commands/execute.js";
 import { execute } from "./commands/execute.js";
 import { locateRun, noRunFound } from "./commands/shared.js";
-import { drive } from "./drive.js";
-import { driveConfigTemplate } from "./drive-config.js";
+import { drive, isSecretRun, sealDriveResult } from "./drive.js";
+import { driveConfigTemplate, readDriveConfig } from "./drive-config.js";
 import type { HandlerResult } from "./envelope.js";
 import { fail } from "./envelope.js";
 import { activeRunOperations, appendRunEvent } from "./events.js";
 import { resolveRoot } from "./run.js";
+import { runLayout } from "./rundir.js";
 import { errorMessage } from "./util.js";
 
 interface CliOpts {
@@ -106,25 +107,28 @@ export function buildProgram(): Command {
         process.on("SIGINT", cancel);
         process.on("SIGTERM", cancel);
         try {
-          emit(
-            await drive({
-              ...opts,
-              minDistinctCitations:
-                opts.minDistinctCitations === undefined
-                  ? undefined
-                  : Number(opts.minDistinctCitations),
-              topic,
-              signal: controller.signal,
-              onEvent: (event) => {
-                process.stderr.write(
-                  opts.json
-                    ? `${JSON.stringify(event)}\n`
-                    : `${event.scope ?? "legacy"} ${event.step ?? "?"} ${event.event}${event.outcome ? `: ${event.outcome}` : ""}\n`,
-                );
-              },
-            }),
-            opts.json === true,
-          );
+          const result = await drive({
+            ...opts,
+            minDistinctCitations:
+              opts.minDistinctCitations === undefined
+                ? undefined
+                : Number(opts.minDistinctCitations),
+            topic,
+            signal: controller.signal,
+            onEvent: (event) => {
+              process.stderr.write(
+                opts.json
+                  ? `${JSON.stringify(event)}\n`
+                  : `${event.scope ?? "legacy"} ${event.step ?? "?"} ${event.event}${event.outcome ? `: ${event.outcome}` : ""}\n`,
+              );
+            },
+          });
+          // Secret stdout carries the outcome only; full detail is in the
+          // run-local diagnostics file. Every other command is unchanged.
+          const sealed = isSecretRun(result.envelope.run)
+            ? sealDriveResult(result, result.envelope.run)
+            : result;
+          emit(sealed, opts.json === true);
         } finally {
           process.off("SIGINT", cancel);
           process.off("SIGTERM", cancel);
@@ -181,7 +185,18 @@ export function buildProgram(): Command {
 function crash(kind: string, error: unknown): void {
   const operations = activeRunOperations();
   const operation = operations.at(-1);
-  const errors = [`E499: ${kind}: ${errorMessage(error)}`];
+  // Secret runs must not leak detail through the crash channel either.
+  // Full trace stays in the run events; stdout carries the code only.
+  let secret = false;
+  try {
+    if (operation) {
+      const config = readDriveConfig(runLayout(operation.run).driveConfigFile);
+      secret = !("result" in config) && config.config.privacy === "secret";
+    }
+  } catch {
+    secret = false;
+  }
+  const errors = secret ? ["E499"] : [`E499: ${kind}: ${errorMessage(error)}`];
   for (const operation of operations) {
     try {
       appendRunEvent(operation.run, {

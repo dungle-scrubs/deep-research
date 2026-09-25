@@ -500,6 +500,69 @@ describe("drive CLI", () => {
     expect(result.envelope.errors.join()).toContain("E109");
     expect(result.envelope.run).toBeNull();
   });
+  it("keeps topic bytes and question text out of secret stdout, with full detail local", () => {
+    const topic = "Zephyrine Quillwick secret survey";
+    const home = path.join(root, "home");
+    fs.mkdirSync(path.join(home, ".agents/skills/choose-model/references"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".agents/skills/choose-model/references/registry.json"),
+      JSON.stringify({
+        models: {
+          fixture: {
+            routes: [
+              {
+                harness: "pi",
+                provider: "fixture",
+                model: "question",
+                hosted: false,
+                privacyEligible: true,
+              },
+            ],
+          },
+        },
+      }),
+    );
+    fs.copyFileSync(path.resolve(__dirname, "fixtures/hcn-secret.mjs"), path.join(root, "bin/hcn"));
+    fs.chmodSync(path.join(root, "bin/hcn"), 0o755);
+    const local = (modelId: string) => ({
+      route: `fixture@pi/fixture`,
+      harness: "pi",
+      provider: "fixture",
+      modelId,
+      effort: "high",
+      hosted: false,
+    });
+    const value = config("question", "question");
+    value.privacy = "secret";
+    for (const step of Object.values(value.steps))
+      if ("selection" in step) {
+        step.query.privacy = "secret";
+        step.selection = local("question");
+        step.fallbacks = [];
+      }
+    const spawned = spawnSync(
+      process.execPath,
+      [DR, "drive", topic, "--root", root, "--config", write("secret.json", value), "--json"],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, HOME: home, PATH: `${root}/bin:${process.env.PATH}` },
+      },
+    );
+    expect(spawned.status).toBe(2);
+    const stdout = spawned.stdout;
+    expect(stdout).not.toContain("Zephyrine");
+    expect(stdout).not.toContain("Quillwick");
+    expect(stdout).not.toContain("Which scope");
+    expect(stdout).toContain("E208");
+    const envelope = JSON.parse(stdout) as Envelope;
+    expect(envelope.run).toMatch(/\d{4}-\d{2}-\d{2}-run/);
+    const diagnostics = JSON.parse(
+      fs.readFileSync(path.join(envelope.run ?? "", "state/drive/diagnostics.json"), "utf8"),
+    );
+    expect(JSON.stringify(diagnostics)).toContain("Which scope, Narrow or Wide?");
+    expect(JSON.stringify(diagnostics)).toContain("E208");
+  });
   it("stops on invalid gate output, cross-lane output, malformed hcn, and questions", () => {
     for (const [model, code, error] of [
       ["invalid", 2, "E205"],
