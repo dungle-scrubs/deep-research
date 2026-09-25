@@ -8,9 +8,24 @@ description: "Drive `dr`, the deterministic deep-research pipeline CLI, through 
 `dr` is a deterministic pipeline over a run directory. The CLI holds
 state, validates structure, fetches every cited URL, derives claim
 statuses, and gates progression. The intelligence - searching, judging,
-writing - comes from you, the caller. The CLI never calls a model.
+writing - comes from you, the caller, or from hcn workers scheduled by
+`dr drive`. The CLI itself never calls a model.
 
-## The loop
+## Choose the driver
+
+Use the agent loop for sessions. It keeps research decisions with you.
+Use `dr drive` for non-agent callers: a human shell, cron, or another tool.
+Read `dr drive --help` before preparing its route config or resuming a run.
+Drive schedules fixed work through hcn and stops at failed gates or worker
+questions. It does not run this skill's session-level audit decisions.
+
+When drive stops, inspect its envelope and the recorded step. Repair through
+normal fulfill/gate commands, then use its exact resume path. Keep previously
+accepted verdict batches. Change accepted early evidence only in a new run;
+do not edit state to skip or rewind. At finalize, edit `report.md` and run
+`dr next`, rather than trying to re-fulfill synthesis.
+
+## The agent loop
 
 ```sh
 dr new "<topic>"   # creates YYYY-MM-DD-slug/
@@ -132,8 +147,9 @@ When a fileable failure occurs, as the agent session driving dr:
 3. File if new:
    `gh issue create --repo dungle-scrubs/deep-research --label auto --title "E401: <first error line>" --body-file <file>`
    Body: the captured material under a "## Evidence" heading plus a
-   "## Command" line. Redact nothing - dr handles no secrets, but check
-   pasted run content for anything the run's topic dragged in.
+   "## Command" line. Inspect content locally before sharing. A run can carry
+   secret material; keep its prompts, sources, questions, and diagnostics
+   private. Shared issue writes require the caller's authorization.
 4. After filing, continue the run's work where possible; a closed run
    can be re-read, and an open one resumes at its recorded step.
 

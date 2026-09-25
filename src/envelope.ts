@@ -31,7 +31,8 @@ export function fail(
   step: string | null,
   errors: readonly string[],
   human?: string,
+  data?: Record<string, unknown>,
 ): HandlerResult {
   const text = human ?? errors.join("\n");
-  return { code, envelope: { ok: false, run, step, errors }, human: text };
+  return { code, envelope: { ok: false, run, step, errors, data }, human: text };
 }

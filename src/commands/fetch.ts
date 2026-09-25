@@ -36,7 +36,7 @@ function summarize(entries: readonly LedgerEntry[]): string {
 /** Execute the fetch step (CLI step): fetch every cited URL once, record
  *  the ledger, advance to verdicts. Unreachable is an outcome, never a run
  *  failure. */
-export async function cmdFetch(runDir: string): Promise<HandlerResult> {
+export async function cmdFetch(runDir: string, explicitTier?: FetchTier): Promise<HandlerResult> {
   const loaded = loadStateOrFail(runDir, null);
   if ("result" in loaded) return loaded.result;
   const state = loaded.state;
@@ -47,7 +47,7 @@ export async function cmdFetch(runDir: string): Promise<HandlerResult> {
   } catch (error) {
     return fail(4, runDir, "fetch", [`E401: ${errorMessage(error)}`]);
   }
-  const tier = fetchTier("plain");
+  const tier = explicitTier ?? fetchTier("plain");
   if (tier === null) return invalidTier(runDir, state.step);
   let entries: readonly LedgerEntry[];
   try {
@@ -76,7 +76,10 @@ export async function cmdFetch(runDir: string): Promise<HandlerResult> {
 }
 
 /** dr retry-fetch: re-attempt non-ok URLs via scraper; keep ok pages. */
-export async function cmdRetryFetch(runDir: string): Promise<HandlerResult> {
+export async function cmdRetryFetch(
+  runDir: string,
+  onlyUntriedScraper = false,
+): Promise<HandlerResult> {
   const loaded = loadStateOrFail(runDir, null);
   if ("result" in loaded) return loaded.result;
   const state = loaded.state;
@@ -104,14 +107,14 @@ export async function cmdRetryFetch(runDir: string): Promise<HandlerResult> {
   } catch (error) {
     return fail(4, runDir, state.step, [`E401: ${errorMessage(error)}`]);
   }
-  const tier = fetchTier("scraper");
+  const tier = onlyUntriedScraper ? "scraper" : fetchTier("scraper");
   if (tier === null) return invalidTier(runDir, state.step);
   const priorAttempts = new Map(
     readLedger(runDir).map((entry) => [entry.normalized, entry.attempts]),
   );
   let entries: readonly LedgerEntry[];
   try {
-    entries = await fetchAll({ retryOnly: true, runDir, tier, urls });
+    entries = await fetchAll({ retryOnly: true, onlyUntriedScraper, runDir, tier, urls });
   } catch (error) {
     return fail(4, runDir, state.step, [`E401: retry-fetch failed: ${errorMessage(error)}`]);
   }
@@ -119,6 +122,7 @@ export async function cmdRetryFetch(runDir: string): Promise<HandlerResult> {
   const human = `Retry-fetch complete: ${counts}\nLedger: ${runLayout(runDir).ledgerFile}`;
   return ok(runDir, state.step, human, {
     counts,
+    ledger: entries,
     entries: entries.filter((entry) => priorAttempts.get(entry.normalized) !== entry.attempts),
   });
 }

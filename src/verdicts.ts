@@ -2,6 +2,10 @@ import * as fs from "node:fs";
 import { z } from "zod";
 import type { ClaimsFile } from "./claims.js";
 import { CLAIM_ID_PATTERN } from "./claims.js";
+import { documentsFor } from "./documents.js";
+
+export { DocumentSet } from "./documents.js";
+
 import type { FetchStatus } from "./fetch.js";
 import { readLedger } from "./fetch.js";
 import { runLayout } from "./rundir.js";
@@ -75,51 +79,6 @@ export interface Matrix {
 export interface VerdictIssue {
   readonly message: string;
   readonly path: string;
-}
-
-/** Union-find over documents: nodes are normalized URLs; sameStudyAs
- *  links merge two citations into one document. */
-export class DocumentSet {
-  private readonly parent = new Map<string, string>();
-
-  private find(node: string): string {
-    let root = node;
-    for (;;) {
-      const next = this.parent.get(root);
-      if (next === undefined || next === root) break;
-      root = next;
-    }
-    // Path compression.
-    let current = node;
-    for (;;) {
-      const next = this.parent.get(current);
-      if (next === undefined || next === root) break;
-      this.parent.set(current, root);
-      current = next;
-    }
-    if (!this.parent.has(root)) this.parent.set(root, root);
-    return root;
-  }
-
-  add(url: string, sameStudyAs?: string | null): void {
-    const a = normalizeUrl(url);
-    if (!this.parent.has(a)) this.parent.set(a, a);
-    if (sameStudyAs) {
-      const b = normalizeUrl(sameStudyAs);
-      if (!this.parent.has(b)) this.parent.set(b, b);
-      const rootA = this.find(a);
-      const rootB = this.find(b);
-      if (rootA !== rootB) {
-        // Deterministic canonical: lexicographically smaller root wins.
-        const [winner, loser] = rootA < rootB ? [rootA, rootB] : [rootB, rootA];
-        this.parent.set(loser, winner);
-      }
-    }
-  }
-
-  documentOf(url: string): string {
-    return this.find(normalizeUrl(url));
-  }
 }
 
 /** These outcomes have no checkable text. Use the same rule for the
@@ -352,7 +311,8 @@ export function validateVerdicts(
       for (const stale of quoteIssues(prior, runDir, batch + 1)) {
         if (
           !("conflict" in stale.entry) &&
-          resubmitted.has(pairKey(stale.entry.claimId, stale.entry.url))
+          (resubmitted.has(pairKey(stale.entry.claimId, stale.entry.url)) ||
+            latestAccepted.get(pairKey(stale.entry.claimId, stale.entry.url)) !== stale.entry)
         ) {
           continue;
         }
@@ -366,7 +326,7 @@ export function validateVerdicts(
   return { entries, issues };
 }
 
-function pairKey(claimId: string, url: string): string {
+export function pairKey(claimId: string, url: string): string {
   return `${claimId}|${normalizeUrl(url)}`;
 }
 
@@ -390,10 +350,7 @@ export function deriveMatrix(
   runDir: string,
   derivedAt: string,
 ): Matrix {
-  const documents = new DocumentSet();
-  for (const claim of claims) {
-    for (const citation of claim.citations) documents.add(citation.url, citation.sameStudyAs);
-  }
+  const documents = documentsFor(claims);
   const ledger = new Map(readLedger(runDir).map((entry) => [entry.normalized, entry.status]));
   const verdictFor = new Map<string, z.infer<typeof verdictValueSchema>>();
   const conflictClaims = new Set<string>();
@@ -468,4 +425,41 @@ function statusFor(rows: readonly CitationRow[], conflict: boolean): ClaimStatus
   if (rows.some((row) => row.verdict === "skipped")) return "skipped";
   if (!anyReachable && rows.length > 0) return "unreachable";
   return "not-found";
+}
+
+/** Whole-claim, citation-order worklist, including stale supported pairs. */
+export function unresolvedVerdictClaims(
+  claims: ClaimsFile,
+  entries: readonly VerdictEntry[],
+  runDir: string,
+): {
+  readonly claim: ClaimsFile[number];
+  readonly pairs: readonly { readonly claimId: string; readonly url: string }[];
+  readonly accepted: readonly VerdictEntry[];
+  readonly conflictAccepted: boolean;
+}[] {
+  const latest = new Map<string, VerdictEntry>();
+  for (const entry of entries)
+    if (!("conflict" in entry)) latest.set(pairKey(entry.claimId, entry.url), entry);
+  return claims
+    .map((claim) => {
+      const seen = new Set<string>();
+      const pairs = claim.citations.flatMap((citation) => {
+        const key = pairKey(claim.id, citation.url);
+        if (seen.has(key)) return [];
+        seen.add(key);
+        const prior = latest.get(key);
+        if (prior && quoteIssues([prior], runDir, null).length === 0) return [];
+        return [{ claimId: claim.id, url: normalizeUrl(citation.url) }];
+      });
+      return {
+        claim,
+        pairs,
+        accepted: entries.filter((entry) => entry.claimId === claim.id),
+        conflictAccepted: entries.some(
+          (entry) => entry.claimId === claim.id && "conflict" in entry,
+        ),
+      };
+    })
+    .filter((item) => item.pairs.length > 0);
 }
