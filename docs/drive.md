@@ -196,6 +196,21 @@ accepted inputs are compiled locally. Run directories and driver prompt,
 result, and diagnostic files have owner-only access. Progress exposes
 identifiers and sanitized error codes, not prompts or source text.
 
+Secret final stdout carries only the outcome: ok, step, exit code, and
+the run path. New secret runs are named without the topic slug
+(`YYYY-MM-DD-run`, numbered on collision), so the logged path proves
+nothing about content. Worker question text, engine error strings, and
+all result data move to `state/drive/diagnostics.json` (mode 0600),
+which the caller reads deliberately: `dr status --root <run>`, the run
+`report.md`, or the diagnostics file itself. The programmatic `drive()`
+result is unsealed; only CLI stdout is redacted, so library callers and
+existing tests keep the complete envelope. Non-secret output is
+unchanged. The crash channel follows the same rule: E499 code on
+stdout in secret mode, full trace in the run events.
+
+The trade: every secret run is two reads instead of one. Cron keeps a
+clean log; the operator loses single-stream triage.
+
 Tool-free local steps cannot perform fresh web searches. If inputs cannot
 support the task, the worker must stop or ask. Use an authorized local
 research path through the agent driver instead. Hosted fallback or weaker
