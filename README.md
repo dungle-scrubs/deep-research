@@ -24,9 +24,14 @@ and fixes its known weakness - matrix entries compared tool outputs instead
 of underlying sources - by fetching every cited URL and deriving claim
 statuses from caller verdicts against the fetched text.
 
-## Install (dev)
+## Install
 
-Node via mise. No npm publish in v1.
+```sh
+npm install -g @dungle-scrubs/deep-research
+dr --help
+```
+
+From a clone, for working on `dr` itself (Node via mise):
 
 ```sh
 pnpm install
@@ -36,15 +41,10 @@ node dist/dr.mjs --help
 
 ## Skill for agent sessions
 
-One line, no Homebrew:
-
-```sh
-ln -s "$(pwd)/skills/deep-research" ~/.agents/skills/deep-research
-```
-
-The skill teaches an agent session to drive the CLI: the loop, the
-per-step choose-model queries, and the untrusted-content warning for
-fetched pages.
+The package ships the agent skill at `skills/deep-research`. It teaches an
+agent session to drive the CLI: the loop, the per-step guidance, and the
+untrusted-content warning for fetched pages. Copy or link it into your
+harness's skills directory.
 
 ## Use
 
