@@ -35,7 +35,7 @@ dr status          # current step, coverage counts
 dr help [<step>]   # pipeline overview or per-step detail
 ```
 
-`dr` is a PATH shim to the repo build (`~/.local/bin/dr`); `dr help`
+Install with `npm install -g @dungle-scrubs/deep-research`; `dr help`
 carries the per-step details, emitted from the binary.
 
 `--root <dir>` or `DR_ROOT` sets the runs root (default: cwd). Every
